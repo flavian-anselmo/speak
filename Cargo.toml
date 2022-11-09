@@ -2,7 +2,10 @@
 name = "speak"
 version = "0.1.0"
 edition = "2021"
+description = """Speak is a programming language that is designed to be easy to learn, use and have configurable keywords in an attempt to allow \
+the use of multiple languages as preferred by the programmer."""
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+clap = { version = "3.2.23", features = ["derive"] }
