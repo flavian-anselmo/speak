@@ -21,8 +21,8 @@ impl ErrorReason {
 }
 
 pub struct Err {
-    reason: ErrorReason,
-    message: String,
+    pub reason: ErrorReason,
+    pub message: String,
 }
 
 impl Err {

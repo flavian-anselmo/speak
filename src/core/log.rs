@@ -19,7 +19,7 @@ pub fn log_interactive(args: &str) {
     println!("{}{}{}", ANSI_GREEN, args, ANSI_RESET);
 }
 
-fn log_safe_err(reason: &ErrorReason, args: &str) {
+pub fn log_safe_err(reason: &ErrorReason, args: &str) {
     let err_str = match reason {
         ErrorReason::Syntax => "syntax error",
         ErrorReason::Runtime => "runtime error",

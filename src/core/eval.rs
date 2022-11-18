@@ -120,15 +120,9 @@ type ValueTable = HashMap<String, Value>;
 #[derive(Debug, Clone)]
 pub struct StackFrame {
     // The parent StackFrame, if any.
-    parent: StackFrameAddress,
+    parent: Option<Box<StackFrame>>,
     // The variables local to this StackFrame.
     value_table: ValueTable,
-}
-
-#[derive(Debug, Clone)]
-enum StackFrameAddress {
-    Address(Box<StackFrame>),
-    Nil,
 }
 
 impl StackFrame {
@@ -139,8 +133,8 @@ impl StackFrame {
             match frame.value_table.get(&name) {
                 Some(val) => return (Some(val.clone()), true),
                 None => match self.parent.clone() {
-                    StackFrameAddress::Address(addr) => frame = *addr,
-                    StackFrameAddress::Nil => return (None, false),
+                    Some(addr) => frame = *addr,
+                    None => return (None, false),
                 },
             }
         }
@@ -158,8 +152,8 @@ impl StackFrame {
             match frame.value_table.insert(name.clone(), val.clone()) {
                 Some(_) => {}
                 None => match self.parent.clone() {
-                    StackFrameAddress::Address(addr) => frame = *addr,
-                    StackFrameAddress::Nil => log_err(
+                    Some(addr) => frame = *addr,
+                    None => log_err(
                         &ErrorReason::Assert,
                         &format!(
                             "StackFrame.Up expected to find variable '{name}' in frame but did not"

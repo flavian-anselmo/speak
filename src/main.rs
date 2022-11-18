@@ -22,12 +22,8 @@ struct SpeakCLI {
 enum Commands {
     /// runs `Speak` files provided
     Run { files: Vec<String> },
-    /// Run as an interactive repl.
-    Repl,
     /// Generates the `Speak` identifier config file.
     Geniconf,
-    /// Evaluates `Speak` expressions.
-    Eval { expr: Vec<String> },
 }
 
 fn main() {
@@ -35,8 +31,6 @@ fn main() {
 
     match speak_cli.command {
         Commands::Run { files: _ } => {}
-        Commands::Repl => {}
         Commands::Geniconf => {}
-        Commands::Eval { expr: _ } => {}
     }
 }
