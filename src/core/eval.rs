@@ -9,8 +9,21 @@ const MAX_PRINT_LEN: usize = 120;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Types {
-    // Covers all Speak numeric types.
-    Numeric,
+    // Unsigned integer types.
+    Uint8, // `byte` is an alias
+    Uint16,
+    Uint32,
+    Uint64, // `uint` is an alias
+
+    // Signed integer types.
+    Int8,
+    Int16,
+    Int32, // `int` | `rune` is an alias
+    Int64,
+
+    // Floating point types.
+    Float32,
+    Float64, // `float` is an alias
 
     // Boolean type.
     Bool,
@@ -48,25 +61,6 @@ impl Types {
     pub fn string(&self) -> String {
         unimplemented!()
     }
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum Numeric {
-    // Unsigned integer types.
-    Uint8(u8), // `byte` is an alias
-    Uint16(u16),
-    Uint32(u32),
-    Uint64(u64), // `uint` is an alias
-
-    // Signed integer types.
-    Int8(i8),
-    Int16(i16),
-    Int32(i32), // `int` is an alias
-    Int64(i64),
-
-    // Floating point types.
-    Float32(f32),
-    Float64(f64), // `float` is an alias
 }
 
 /// Value represents any value in the Speak programming language.
@@ -209,11 +203,14 @@ impl Context {
         log_debug(&format!("frame_dump:\n{}", self.frame.clone().string()));
     }
 
+    // Takes a channel of Nodes to evaluate, and executes the Speak programs defined
+    // in the syntax tree. Returning the last value of the last expression in the AST,
+    // or an error to stderr if there was a runtime error.
     pub fn eval(&self, nodes: Receiver<Node>, dump_frame: bool) {
-        // let frame = self.frame
         for node in nodes {
             if let Err(err) = node.eval(&self.frame, false) {
                 log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
+                break;
             }
         }
 

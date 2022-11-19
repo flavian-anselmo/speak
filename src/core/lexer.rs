@@ -1,3 +1,4 @@
+use core::num::dec2flt::float;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read},
@@ -5,7 +6,7 @@ use std::{
 };
 
 use super::{
-    error::Err,
+    error::{Err, ErrorReason},
     eval::{Numeric, Types},
     log::log_debug,
     parser::FunctionExp,
@@ -22,6 +23,8 @@ pub enum Kind {
 
     TrueLiteral,
     FalseLiteral,
+    NumberLiteral,
+    StringLiteral,
 
     TypeName(Types),
     CommaSep,
@@ -40,20 +43,22 @@ impl Kind {
             Kind::FunctionExpr => "function expression".to_string(),
 
             Kind::Identifier => "identifier".to_string(),
-            Kind::EmptyIdentifier => "_".to_string(),
+            Kind::EmptyIdentifier => "'_'".to_string(),
 
-            Kind::TrueLiteral => "true".to_string(),
-            Kind::FalseLiteral => "false".to_string(),
+            Kind::TrueLiteral => "true literal".to_string(),
+            Kind::FalseLiteral => "false literal".to_string(),
+            Kind::NumberLiteral => "number literal".to_string(),
+            Kind::StringLiteral => "string literal".to_string(),
 
             Kind::TypeName(t) => t.string(),
-            Kind::CommaSep => "separator".to_string(),
+            Kind::CommaSep => "','".to_string(),
 
             Kind::FunctionArrow => "->".to_string(),
 
-            Kind::LeftParen => "(".to_string(),
-            Kind::RightParen => ")".to_string(),
-            Kind::LeftBracket => "[".to_string(),
-            Kind::RightBracket => "]".to_string(),
+            Kind::LeftParen => "'('".to_string(),
+            Kind::RightParen => "')'".to_string(),
+            Kind::LeftBracket => "'['".to_string(),
+            Kind::RightBracket => "']'".to_string(),
         }
     }
 }
@@ -73,57 +78,118 @@ impl Position {
 // Tok is the monomorphic struct representing all Speak program tokens
 // in the lexer.
 #[derive(Debug, Clone)]
-pub struct Tok {
+pub struct Tok<Number> {
     kind: Kind,
     str: Option<String>,
-    num: Option<Numeric>,
+    num: Option<Number>,
     position: Position,
 }
 
-impl Tok {
+impl<Number> Tok<Number> {
     fn string(&self) -> String {
         match self.kind {
-            // Kind::Identifier | Kind::StringLiteral | Kind::NumberLiteral => {
-            //     format!(
-            //         "{} '{}' [{}]",
-            //         self.kind.string(),
-            //         self.str.unwrap(), // safe to unwrap, types matched always have str
-            //         self.position.string()
-            //     )
-            // }
+            Kind::Identifier | Kind::StringLiteral | Kind::NumberLiteral => {
+                format!(
+                    "{} '{}' [{}]",
+                    self.kind.string(),
+                    self.str.unwrap(), // safe to unwrap, types matched always have str
+                    self.position.string()
+                )
+            }
             _ => format!("{} [{}]", self.kind.string(), self.position.string()),
         }
     }
 }
 
 // Tokenize takes an io.Reader and transforms it into a stream of Tok (tokens).
-pub fn Tokenize<R: Sized>(
+// assumption: the inputs are valid UTF-8 strings.
+pub fn Tokenize<R: Sized, Number>(
     unbuffered: &mut BufReader<File>,
-    tokens_chan: Sender<Tok>,
+    tokens_chan: Sender<Tok<Number>>,
     fatal_err: bool,
     debug_lexer: bool,
 ) -> Result<(), Err> {
-    // assumption: the input is a valid UTF-8 string
-    let mut last_char = ' ';
-
     // read a complete line while parsing
     let mut buf = String::new();
-    for i in unbuffered.read_line(&mut buf) {
+    let mut entry = String::new();
+    let mut last_line_column = (0, 0);
+    'NEXT_LINE_PARSER: for line in unbuffered.read_line(&mut buf) {
         // skip comments
         if buf.starts_with("//") {
             continue;
         }
 
-        let mut entry = String::new();
-        let mut str_literal = false;
-        for (colNo, c) in buf.chars().enumerate() {
-            // skip whitespace
-            if c == ' ' {
-                continue;
-            }
-
+        let mut buf_iter = buf.chars().into_iter().enumerate();
+        'NEXT_COLUMN_PARSER: while let Some((column, c)) = buf_iter.next() {
             match c {
-                ' ' => commit_arbitrary_entry(&entry, &tokens_chan, &debug_lexer, i + 1, colNo + 1),
+                '/' => {
+                    let err = Err(Err {
+                        reason: ErrorReason::Syntax,
+                        message: format!("expected item after: {}", c),
+                    });
+
+                    // start of a comment, assert and skip rest of the line
+                    match buf_iter.next() {
+                        Some((_, c)) => {
+                            if c != '/' {
+                                return err;
+                            }
+
+                            continue 'NEXT_LINE_PARSER;
+                        }
+                        None => return err,
+                    }
+                }
+                ' ' => {
+                    if entry.starts_with(".(") {
+                        entry.push(c);
+                        continue;
+                    }
+
+                    commit_arbitrary_entry(
+                        entry.clone(),
+                        &tokens_chan,
+                        &debug_lexer,
+                        line + 1,
+                        column + 1,
+                    );
+                    entry.clear();
+                }
+                '"' => {
+                    // start of a string literal, assert as literals
+                    loop {
+                        match buf_iter.next() {
+                            Some((column, c)) => match c {
+                                '"' => {
+                                    // commit string literal
+                                    commit(
+                                        Tok {
+                                            kind: Kind::StringLiteral,
+                                            str: Some(entry.clone()),
+                                            num: None,
+                                            position: Position {
+                                                line: line + 1,
+                                                column: column + 1,
+                                            },
+                                        },
+                                        &tokens_chan,
+                                        &debug_lexer,
+                                    );
+                                    continue 'NEXT_COLUMN_PARSER;
+                                }
+                                _ => {
+                                    entry.push(c);
+                                }
+                            },
+                            None => {
+                                return Err(Err {
+                                    reason: ErrorReason::Syntax,
+                                    message: format!("missing trailing symbol '\"'"),
+                                })
+                            }
+                        }
+                    }
+                }
                 ':' => {
                     commit(
                         Tok {
@@ -131,8 +197,8 @@ pub fn Tokenize<R: Sized>(
                             str: None,
                             num: None,
                             position: Position {
-                                line: i + 1,
-                                column: colNo + 1,
+                                line: line + 1,
+                                column: column + 1,
                             },
                         },
                         &tokens_chan,
@@ -146,8 +212,8 @@ pub fn Tokenize<R: Sized>(
                             str: None,
                             num: None,
                             position: Position {
-                                line: i + 1,
-                                column: colNo + 1,
+                                line: line + 1,
+                                column: column + 1,
                             },
                         },
                         &tokens_chan,
@@ -162,8 +228,8 @@ pub fn Tokenize<R: Sized>(
                             str: None,
                             num: None,
                             position: Position {
-                                line: i + 1,
-                                column: colNo + 1,
+                                line: line + 1,
+                                column: column + 1,
                             },
                         },
                         &tokens_chan,
@@ -173,24 +239,34 @@ pub fn Tokenize<R: Sized>(
                 }
                 _ => {
                     entry.push(c);
+                    last_line_column.0 = line + 1;
+                    last_line_column.1 = column + 1;
                 }
             }
         }
     }
 
-    unimplemented!()
+    commit_arbitrary_entry(
+        entry,
+        &tokens_chan,
+        &debug_lexer,
+        last_line_column.0,
+        last_line_column.1,
+    );
+
+    Ok(())
 }
 
-fn commit(tok: Tok, tokens_chan: &Sender<Tok>, debug_lexer: &bool) {
+fn commit<Number>(tok: Tok<Number>, tokens_chan: &Sender<Tok<Number>>, debug_lexer: &bool) {
     if *debug_lexer {
         log_debug(&format!("lexer -> {}", tok.string()));
     }
     tokens_chan.send(tok).unwrap();
 }
 
-fn commit_arbitrary_entry(
-    entry: &str,
-    tokens_chan: &Sender<Tok>,
+fn commit_arbitrary_entry<Number>(
+    entry: String,
+    tokens_chan: &Sender<Tok<Number>>,
     debug_lexer: &bool,
     line: usize,
     column: usize,
@@ -200,17 +276,34 @@ fn commit_arbitrary_entry(
         return;
     }
 
-    match entry {
-        "bool" => commit(
+    let type_token = |kind| {
+        commit(
             Tok {
-                kind: Kind::TypeName(Types::Bool),
+                kind,
                 str: None,
                 num: None,
                 position: Position { line, column },
             },
             tokens_chan,
             debug_lexer,
-        ),
+        )
+    };
+
+    match entry.as_str() {
+        "uint8" | "byte" => type_token(Kind::TypeName(Types::Uint8)),
+        "uint16" => type_token(Kind::TypeName(Types::Uint16)),
+        "uint32" => type_token(Kind::TypeName(Types::Uint32)),
+        "uint64" | "uint" => type_token(Kind::TypeName(Types::Uint64)),
+        "int8" => type_token(Kind::TypeName(Types::Int8)),
+        "int16" => type_token(Kind::TypeName(Types::Int16)),
+        "int32" | "int" | "rune" => type_token(Kind::TypeName(Types::Int32)),
+        "int64" => type_token(Kind::TypeName(Types::Int64)),
+        "float32" => type_token(Kind::TypeName(Types::Float32)),
+        "float64" | "float" => type_token(Kind::TypeName(Types::Float64)),
+
+        "bool" => type_token(Kind::TypeName(Types::Bool)),
+        "string" => type_token(Kind::TypeName(Types::String)),
+
         "true" => commit(
             Tok {
                 kind: Kind::TrueLiteral,
@@ -243,7 +336,22 @@ fn commit_arbitrary_entry(
         ),
 
         _ => {
-            // TODO: check if it's a number
+            if !entry.is_empty() && entry.parse::<f64>().is_ok() {
+                commit(
+                    Tok {
+                        kind: Kind::NumberLiteral,
+                        str: Some(entry.to_string()),
+                        num: None,
+                        position: Position {
+                            line,
+                            column: { column - entry.len() },
+                        },
+                    },
+                    tokens_chan,
+                    debug_lexer,
+                );
+            }
+
             commit(
                 Tok {
                     kind: Kind::Identifier,
