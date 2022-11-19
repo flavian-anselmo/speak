@@ -1,21 +1,70 @@
-use crate::core::{eval, lexer};
-use std::collections::HashMap;
-
-use super::eval::Value;
+use super::{
+    eval::{StackFrame, Value},
+    lexer::Tok, error::Err,
+};
+use crate::core::lexer;
+use std::{
+    fmt::Error,
+    sync::mpsc::{Receiver, Sender},
+};
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
-pub enum Node {}
+#[derive(Debug, Clone)]
+pub enum Node {
+    FunctionExpNode(Box<FunctionExp>),
+}
 
 impl Node {
     fn string(&self) -> String {
-        unimplemented!()
+        match self {
+            Node::FunctionExpNode(f) => f.string(),
+            _ => unimplemented!("string() not implemented for this node type"),
+        }
     }
 
     fn position(&self) -> lexer::Position {
-        unimplemented!()
+        match self {
+            Node::FunctionExpNode(f) => f.position.clone(),
+            _ => unimplemented!("position not implemented for node"),
+        }
+    }
+
+    pub fn eval(&self, frame: &StackFrame, allow_thunk: bool) -> Result<Value, Error> {
+        unimplemented!("Eval not implemented for node")
     }
 }
 
 fn poss(n: Node) -> String {
     n.position().string()
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionExp {
+    inputs: Vec<Node>,
+    output: Node,
+    // The function body may be empty for interface and function type declarations.
+    body: Option<Node>,
+    position: lexer::Position,
+}
+
+impl FunctionExp {
+    pub fn string(&self) -> String {
+        let args = self
+            .inputs
+            .clone()
+            .into_iter()
+            .map(|i| i.string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!("FUNCTION: {} -> {}", args, self.output.string(),)
+    }
+}
+
+pub fn Parse(
+    tokens_chan: Receiver<Tok>,
+    nodes_chan: Sender<Node>,
+    fatal_error: bool,
+    debug_parser: bool,
+) -> Result<(), Err> {
+    unimplemented!()
 }

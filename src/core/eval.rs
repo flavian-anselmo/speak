@@ -1,25 +1,16 @@
-use super::{error::ErrorReason, log::log_err};
-use std::collections::HashMap;
+use super::{
+    error::ErrorReason,
+    log::{log_debug, log_err},
+    parser::Node,
+};
+use std::{collections::HashMap, env, sync::mpsc::Receiver};
 
 const MAX_PRINT_LEN: usize = 120;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Types {
-    // Unsigned integer types.
-    Uint8,
-    Uint16,
-    Uint32,
-    Uint64,
-
-    // Signed integer types.
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-
-    // Floating point types.
-    Float32,
-    Float64,
+    // Covers all Speak numeric types.
+    Numeric,
 
     // Boolean type.
     Bool,
@@ -50,17 +41,32 @@ pub enum Types {
 
     // Empty type.
     Empty,
-
-    // Type type.
-    Type,
 }
 
 // type aliases
 impl Types {
-    pub const BYTE: Types = Types::Uint8;
-    pub const RUNE: Types = Types::Int32;
-    pub const UINT: Types = Types::Uint64;
-    pub const FLOAT: Types = Types::Float64;
+    pub fn string(&self) -> String {
+        unimplemented!()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Numeric {
+    // Unsigned integer types.
+    Uint8(u8), // `byte` is an alias
+    Uint16(u16),
+    Uint32(u32),
+    Uint64(u64), // `uint` is an alias
+
+    // Signed integer types.
+    Int8(i8),
+    Int16(i16),
+    Int32(i32), // `int` is an alias
+    Int64(i64),
+
+    // Floating point types.
+    Float32(f32),
+    Float64(f64), // `float` is an alias
 }
 
 /// Value represents any value in the Speak programming language.
@@ -86,7 +92,7 @@ impl Value {
     }
 
     /// string returns the string representation of the value.
-    fn string(&self) -> String {
+    pub fn string(&self) -> String {
         match self {
             Value::EmptyValue => String::from_utf8(vec![]).unwrap(),
             Value::StringValue(_) => "_".to_string(), // TODO
@@ -156,7 +162,7 @@ impl StackFrame {
                     None => log_err(
                         &ErrorReason::Assert,
                         &format!(
-                            "StackFrame.Up expected to find variable '{name}' in frame but did not"
+                            "StackFrame.up expected to find variable '{name}' in frame but did not"
                         ),
                     ),
                 },
@@ -189,7 +195,30 @@ pub struct Context {
     cwd: String,
     /// The currently executing file's path, if any
     file: String,
-    engine: Option<Engine>,
+    engine: Engine,
     /// Frame represents the Context's global heap
-    frame: Option<Box<StackFrame>>,
+    frame: Box<StackFrame>,
+}
+
+impl Context {
+    fn reset_wd(&mut self) {
+        self.cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
+    }
+
+    pub fn dump(&self) {
+        log_debug(&format!("frame_dump:\n{}", self.frame.clone().string()));
+    }
+
+    pub fn eval(&self, nodes: Receiver<Node>, dump_frame: bool) {
+        // let frame = self.frame
+        for node in nodes {
+            if let Err(err) = node.eval(&self.frame, false) {
+                log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
+            }
+        }
+
+        if dump_frame {
+            self.dump();
+        }
+    }
 }

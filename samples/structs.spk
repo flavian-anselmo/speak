@@ -5,7 +5,7 @@ val_const is 10: const
 val is int
 
 other_value is interface
-    name .(int, string -> string)
+    name: int, string -> string
 
 value is struct
     a, b int, b other_value

@@ -21,7 +21,10 @@ struct SpeakCLI {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// runs `Speak` files provided
-    Run { files: Vec<String> },
+    Run {
+        files: Vec<String>,
+    },
+    Repl,
     /// Generates the `Speak` identifier config file.
     Geniconf,
 }
@@ -31,6 +34,7 @@ fn main() {
 
     match speak_cli.command {
         Commands::Run { files: _ } => {}
+        Commands::Repl => {}
         Commands::Geniconf => {}
     }
 }
