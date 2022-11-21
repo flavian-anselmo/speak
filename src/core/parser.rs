@@ -1,7 +1,4 @@
-use super::{
-    eval::{StackFrame, Value},
-    lexer::Tok, error::Err,
-};
+use super::{error::Err, eval::{Value, StackFrame}, lexer::Tok};
 use crate::core::lexer;
 use std::{
     fmt::Error,
@@ -60,8 +57,8 @@ impl FunctionExp {
     }
 }
 
-pub fn Parse(
-    tokens_chan: Receiver<Tok>,
+pub fn Parse<Number>(
+    tokens_chan: Receiver<Tok<Number>>,
     nodes_chan: Sender<Node>,
     fatal_error: bool,
     debug_parser: bool,

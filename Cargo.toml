@@ -9,3 +9,4 @@ the use of multiple spoken languages as preferred by the programmer."""
 
 [dependencies]
 clap = { version = "3.2.23", features = ["derive"] }
+num-traits = "0.2"

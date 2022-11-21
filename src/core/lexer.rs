@@ -1,15 +1,13 @@
-use core::num::dec2flt::float;
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader},
     sync::mpsc::Sender,
 };
 
 use super::{
     error::{Err, ErrorReason},
-    eval::{Numeric, Types},
+    eval::Type,
     log::log_debug,
-    parser::FunctionExp,
 };
 
 // Kind is the sum type of all possible types
@@ -26,8 +24,11 @@ pub enum Kind {
     NumberLiteral,
     StringLiteral,
 
-    TypeName(Types),
+    TypeName(Type),
     CommaSep,
+
+    Bang,
+    QuestionMark,
 
     FunctionArrow,
 
@@ -52,6 +53,9 @@ impl Kind {
 
             Kind::TypeName(t) => t.string(),
             Kind::CommaSep => "','".to_string(),
+
+            Kind::Bang => "'!'".to_string(),
+            Kind::QuestionMark => "'?'".to_string(),
 
             Kind::FunctionArrow => "->".to_string(),
 
@@ -92,7 +96,7 @@ impl<Number> Tok<Number> {
                 format!(
                     "{} '{}' [{}]",
                     self.kind.string(),
-                    self.str.unwrap(), // safe to unwrap, types matched always have str
+                    self.str.clone().unwrap(), // safe to unwrap, types matched always have str
                     self.position.string()
                 )
             }
@@ -146,7 +150,7 @@ pub fn Tokenize<R: Sized, Number>(
                         continue;
                     }
 
-                    commit_arbitrary_entry(
+                    commit_arbitrary(
                         entry.clone(),
                         &tokens_chan,
                         &debug_lexer,
@@ -237,6 +241,38 @@ pub fn Tokenize<R: Sized, Number>(
                     );
                     entry.clear();
                 }
+                '!' => {
+                    commit(
+                        Tok {
+                            kind: Kind::Bang,
+                            str: None,
+                            num: None,
+                            position: Position {
+                                line: line + 1,
+                                column: column + 1,
+                            },
+                        },
+                        &tokens_chan,
+                        &debug_lexer,
+                    );
+                    entry.clear();
+                }
+                '?' => {
+                    commit(
+                        Tok {
+                            kind: Kind::QuestionMark,
+                            str: None,
+                            num: None,
+                            position: Position {
+                                line: line + 1,
+                                column: column + 1,
+                            },
+                        },
+                        &tokens_chan,
+                        &debug_lexer,
+                    );
+                    entry.clear();
+                }
                 _ => {
                     entry.push(c);
                     last_line_column.0 = line + 1;
@@ -246,7 +282,7 @@ pub fn Tokenize<R: Sized, Number>(
         }
     }
 
-    commit_arbitrary_entry(
+    commit_arbitrary(
         entry,
         &tokens_chan,
         &debug_lexer,
@@ -264,7 +300,7 @@ fn commit<Number>(tok: Tok<Number>, tokens_chan: &Sender<Tok<Number>>, debug_lex
     tokens_chan.send(tok).unwrap();
 }
 
-fn commit_arbitrary_entry<Number>(
+fn commit_arbitrary<Number>(
     entry: String,
     tokens_chan: &Sender<Tok<Number>>,
     debug_lexer: &bool,
@@ -290,19 +326,21 @@ fn commit_arbitrary_entry<Number>(
     };
 
     match entry.as_str() {
-        "uint8" | "byte" => type_token(Kind::TypeName(Types::Uint8)),
-        "uint16" => type_token(Kind::TypeName(Types::Uint16)),
-        "uint32" => type_token(Kind::TypeName(Types::Uint32)),
-        "uint64" | "uint" => type_token(Kind::TypeName(Types::Uint64)),
-        "int8" => type_token(Kind::TypeName(Types::Int8)),
-        "int16" => type_token(Kind::TypeName(Types::Int16)),
-        "int32" | "int" | "rune" => type_token(Kind::TypeName(Types::Int32)),
-        "int64" => type_token(Kind::TypeName(Types::Int64)),
-        "float32" => type_token(Kind::TypeName(Types::Float32)),
-        "float64" | "float" => type_token(Kind::TypeName(Types::Float64)),
+        "uint8" | "byte" => type_token(Kind::TypeName(Type::Uint8)),
+        "uint16" => type_token(Kind::TypeName(Type::Uint16)),
+        "uint32" => type_token(Kind::TypeName(Type::Uint32)),
+        "uint64" | "uint" => type_token(Kind::TypeName(Type::Uint64)),
+        "int8" => type_token(Kind::TypeName(Type::Int8)),
+        "int16" => type_token(Kind::TypeName(Type::Int16)),
+        "int32" | "int" | "rune" => type_token(Kind::TypeName(Type::Int32)),
+        "int64" => type_token(Kind::TypeName(Type::Int64)),
+        "float32" => type_token(Kind::TypeName(Type::Float32)),
+        "float64" | "float" => type_token(Kind::TypeName(Type::Float64)),
 
-        "bool" => type_token(Kind::TypeName(Types::Bool)),
-        "string" => type_token(Kind::TypeName(Types::String)),
+        "bool" => type_token(Kind::TypeName(Type::Bool)),
+        "string" => type_token(Kind::TypeName(Type::String)),
+
+        "->" => type_token(Kind::FunctionArrow),
 
         "true" => commit(
             Tok {
@@ -326,7 +364,7 @@ fn commit_arbitrary_entry<Number>(
         ),
         "()" => commit(
             Tok {
-                kind: Kind::TypeName(Types::Empty),
+                kind: Kind::TypeName(Type::Empty),
                 str: None,
                 num: None,
                 position: Position { line, column },
