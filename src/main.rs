@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate lazy_static;
 mod core;
 use clap::{Parser, Subcommand};
 

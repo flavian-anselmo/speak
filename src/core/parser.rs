@@ -57,8 +57,8 @@ impl FunctionExp {
     }
 }
 
-pub fn Parse<Number>(
-    tokens_chan: Receiver<Tok<Number>>,
+pub fn parse<T>(
+    tokens_chan: Receiver<Tok<T>>,
     nodes_chan: Sender<Node>,
     fatal_error: bool,
     debug_parser: bool,

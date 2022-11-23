@@ -60,7 +60,28 @@ pub enum Type {
 // type aliases
 impl Type {
     pub fn string(&self) -> String {
-        unimplemented!()
+        match self {
+            Type::Uint8 => "byte".to_string(),
+            Type::Uint16 => "uint16".to_string(),
+            Type::Uint32 => "uint32".to_string(),
+            Type::Uint64 => "uint".to_string(),
+            Type::Int8 => "int8".to_string(),
+            Type::Int16 => "int16".to_string(),
+            Type::Int32 => "int".to_string(),
+            Type::Int64 => "int64".to_string(),
+            Type::Float32 => "float32".to_string(),
+            Type::Float64 => "float".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::String => "string".to_string(),
+            Type::Array { r#type } => format!("[]{}", r#type.string()),
+            Type::Map => "map".to_string(),
+            Type::Function => "function".to_string(),
+            Type::Interface => "interface".to_string(),
+            Type::Pointer => "pointer".to_string(),
+            Type::Struct => "struct".to_string(),
+            Type::Enum => "enum".to_string(),
+            Type::Empty => "empty".to_string(),
+        }
     }
 }
 
@@ -179,11 +200,11 @@ pub struct Engine {}
 /// ValueTable is used anytime a map of names/labels to Speak Values is needed,
 /// and is notably used to represent stack frames/heaps and CompositeValue dictionaries.
 #[derive(Debug, Clone)]
-struct ValueTable(HashMap<String, Value>);
+pub struct ValueTable(HashMap<String, Value>);
 
 impl ValueTable {
-    fn new() -> Self {
-        Self(HashMap::new())
+    fn new(map: HashMap<String, Value>) -> Self {
+        Self(map)
     }
 
     fn get(&self, name: &str) -> Option<Value> {
@@ -199,17 +220,21 @@ impl ValueTable {
 /// and recursively references other parent StackFrames internally.
 #[derive(Debug, Clone)]
 pub enum StackFrame {
-    Ptr(Rc<RefCell<ValueTable>>, Rc<StackFrame>),
+    Cons(Rc<RefCell<ValueTable>>, Rc<StackFrame>),
     Nil,
 }
 
 impl StackFrame {
+    fn new(value_table: ValueTable, parent: StackFrame) -> Self {
+        Self::Cons(Rc::new(RefCell::new(value_table)), Rc::new(parent))
+    }
+
     /// Get a value from the stack frame chain.
     fn get(&self, name: &str) -> Option<Value> {
-        if let StackFrame::Ptr(frame, next_frame) = self {
+        if let StackFrame::Cons(frame, next_frame) = self {
             match (*frame.clone()).borrow().get(name) {
                 Some(v) => return Some(v),
-                None => return next_frame.get(name.clone()),
+                None => return next_frame.get(name),
             }
         }
         return None;
@@ -217,14 +242,14 @@ impl StackFrame {
 
     /// sets a value to the provided stack frame.
     fn set(&mut self, name: String, val: Value) {
-        if let StackFrame::Ptr(frame, _) = self {
+        if let StackFrame::Cons(frame, _) = self {
             (*frame.clone()).borrow_mut().set(name.clone(), val.clone())
         }
     }
 
     /// updates a value in the stack frame chain.
     fn up(&mut self, name: String, val: Value) {
-        if let StackFrame::Ptr(frame, next_frame) = self {
+        if let StackFrame::Cons(frame, next_frame) = self {
             (*frame.clone())
                 .borrow_mut()
                 .0
@@ -234,7 +259,7 @@ impl StackFrame {
 
     /// dumps the stack frame chain to return out.
     fn string(&self) -> Option<String> {
-        if let StackFrame::Ptr(frame, next_frame) = self {
+        if let StackFrame::Cons(frame, next_frame) = self {
             let mut entries = Vec::new();
             for (k, v) in (*frame.clone()).borrow().0.clone() {
                 let mut v_str = v.string();
@@ -252,48 +277,6 @@ impl StackFrame {
         }
 
         return None;
-    }
-}
-
-#[test]
-fn test_stack_frame() {
-    let mut frame = StackFrame::Ptr(
-        Rc::new(RefCell::new(ValueTable::new())),
-        Rc::new(StackFrame::Nil),
-    );
-
-    // test stackframe.set(), stackframe.get()
-    {
-        frame.set(
-            "a".to_string(),
-            Value::StringValue("a".to_string().into_bytes()),
-        );
-
-        assert!(frame
-            .get("a")
-            .expect("key must be present")
-            .equals(Value::StringValue("a".to_string().into_bytes())));
-    }
-
-    // test stackframe.string()
-    {
-        assert_eq!(
-            frame.string().expect("frame must be present"),
-            "{\n\ta -> a\n} -parent-> Nil".to_string()
-        );
-    }
-
-    // test stackframe.up(), stackframe.get()
-    {
-        frame.up(
-            "a".to_string(),
-            Value::StringValue("mutated value".to_string().into_bytes()),
-        );
-
-        assert!(frame
-            .get("a")
-            .expect("key must be present")
-            .equals(Value::StringValue("mutated value".to_string().into_bytes())));
     }
 }
 
@@ -334,5 +317,57 @@ impl Context {
         if dump_frame {
             self.dump();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stack_frame() {
+        let mut frame = StackFrame::new(
+            ValueTable::new(HashMap::from([(
+                String::from("a"),
+                Value::StringValue("hello".into()),
+            )])),
+            StackFrame::Nil,
+        );
+
+        // test stackframe.set(), stackframe.get()
+        frame.set(
+            "a".to_string(),
+            Value::StringValue("hello".to_string().into_bytes()),
+        );
+        assert!(frame
+            .get("a")
+            .expect("key must be present")
+            .equals(Value::StringValue("hello".to_string().into_bytes())));
+
+        // test stackframe.string()
+        assert_eq!(
+            frame.string().expect("frame must be present"),
+            "{\n\ta -> hello\n} -parent-> Nil".to_string()
+        );
+
+        // test stackframe.up(), stackframe.get()
+        frame.up(
+            "a".to_string(),
+            Value::StringValue("mutated value".to_string().into_bytes()),
+        );
+        assert!(frame
+            .get("a")
+            .expect("key must be present")
+            .equals(Value::StringValue("mutated value".to_string().into_bytes())));
+
+        //test stackframe.get, in parent frame
+        let frame = StackFrame::Cons(
+            Rc::new(RefCell::new(ValueTable::new(HashMap::new()))),
+            Rc::new(frame),
+        );
+        assert!(frame
+            .get("a")
+            .expect("key must be present")
+            .equals(Value::StringValue("mutated value".to_string().into_bytes())));
     }
 }

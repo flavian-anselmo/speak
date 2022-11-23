@@ -1,5 +1,8 @@
+use std::sync::mpsc::SendError;
+
 // ErrorReason enums represent possible errors that the Speak interpreter
 // binding functions may return.
+#[derive(Debug, PartialEq, Clone)]
 pub enum ErrorReason {
     Unknown,
     Syntax,
@@ -20,6 +23,7 @@ impl ErrorReason {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
 pub struct Err {
     pub reason: ErrorReason,
     pub message: String,
@@ -28,5 +32,23 @@ pub struct Err {
 impl Err {
     pub fn error(&self) -> String {
         self.message.clone()
+    }
+}
+
+impl From<std::io::Error> for Err {
+    fn from(err: std::io::Error) -> Self {
+        Err {
+            reason: ErrorReason::System,
+            message: format!("System error: {}", err),
+        }
+    }
+}
+
+impl<T> From<SendError<T>> for Err {
+    fn from(err: SendError<T>) -> Self {
+        Err {
+            reason: ErrorReason::System,
+            message: format!("System error: {}", err),
+        }
     }
 }

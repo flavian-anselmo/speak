@@ -1,18 +1,23 @@
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    sync::mpsc::Sender,
-};
-
 use super::{
     error::{Err, ErrorReason},
     eval::Type,
     log::log_debug,
 };
+use num_traits::Num;
+use regex::Regex;
+use std::{
+    io::{BufRead, BufReader},
+    sync::mpsc::Sender,
+};
+
+lazy_static! {
+    static ref IDENTIFIER_REGEX: Regex =
+        Regex::new(r"^[A-Za-z_]\w*$").expect("regex pattern is valid");
+}
 
 // Kind is the sum type of all possible types
 // of tokens in a Speak program
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     FunctionExpr,
 
@@ -25,7 +30,8 @@ pub enum Kind {
     StringLiteral,
 
     TypeName(Type),
-    CommaSep,
+    Comma,
+    Colon,
 
     Bang,
     QuestionMark,
@@ -52,7 +58,8 @@ impl Kind {
             Kind::StringLiteral => "string literal".to_string(),
 
             Kind::TypeName(t) => t.string(),
-            Kind::CommaSep => "','".to_string(),
+            Kind::Comma => "','".to_string(),
+            Kind::Colon => "':'".to_string(),
 
             Kind::Bang => "'!'".to_string(),
             Kind::QuestionMark => "'?'".to_string(),
@@ -67,7 +74,7 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Position {
     line: usize,
     column: usize,
@@ -81,11 +88,11 @@ impl Position {
 
 // Tok is the monomorphic struct representing all Speak program tokens
 // in the lexer.
-#[derive(Debug, Clone)]
-pub struct Tok<Number> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tok<T> {
     kind: Kind,
     str: Option<String>,
-    num: Option<Number>,
+    num: Option<T>,
     position: Position,
 }
 
@@ -105,59 +112,80 @@ impl<Number> Tok<Number> {
     }
 }
 
-// Tokenize takes an io.Reader and transforms it into a stream of Tok (tokens).
+// tokenize takes an io.Reader and transforms it into a stream of Tok (tokens).
 // assumption: the inputs are valid UTF-8 strings.
-pub fn Tokenize<R: Sized, Number>(
-    unbuffered: &mut BufReader<File>,
-    tokens_chan: Sender<Tok<Number>>,
-    fatal_err: bool,
+pub fn tokenize<T>(
+    unbuffered: &mut BufReader<&[u8]>,
+    tokens_chan: &Sender<Tok<T>>,
+    _fatal_err: bool,
     debug_lexer: bool,
 ) -> Result<(), Err> {
     // read a complete line while parsing
     let mut buf = String::new();
     let mut entry = String::new();
     let mut last_line_column = (0, 0);
-    'NEXT_LINE_PARSER: for line in unbuffered.read_line(&mut buf) {
-        // skip comments
+    let mut comment = false;
+    let mut line = 1;
+
+    // helper cal_col fn
+    let col_fn = |col, len| {
+        if len == 1 {
+            return col;
+        }
+        return col - (len - 1);
+    };
+
+    'NEXT_LINE_PARSER: for _ in unbuffered.read_line(&mut buf) {
+        // skip line comments
         if buf.starts_with("//") {
+            buf.clear();
+            line += 1;
             continue;
         }
 
-        let mut buf_iter = buf.chars().into_iter().enumerate();
-        'NEXT_COLUMN_PARSER: while let Some((column, c)) = buf_iter.next() {
+        let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
+        // 'NEXT_COLUMN_PARSER:
+        while let Some((column, c)) = buf_iter.next() {
+            // skip if char is newline
+            if c == 0xA as char {
+                line += 1;
+                buf.clear();
+                continue 'NEXT_LINE_PARSER;
+            }
+
             match c {
                 '/' => {
-                    let err = Err(Err {
+                    if comment {
+                        comment = false;
+                        line += 1;
+                        buf.clear();
+                        continue 'NEXT_LINE_PARSER;
+                    }
+
+                    if let Some((_, '/')) = buf_iter.next() {
+                        comment = false;
+                        line += 1;
+                        buf.clear();
+                        continue 'NEXT_LINE_PARSER;
+                    }
+
+                    return Err(Err {
                         reason: ErrorReason::Syntax,
                         message: format!("expected item after: {}", c),
                     });
-
-                    // start of a comment, assert and skip rest of the line
-                    match buf_iter.next() {
-                        Some((_, c)) => {
-                            if c != '/' {
-                                return err;
-                            }
-
-                            continue 'NEXT_LINE_PARSER;
-                        }
-                        None => return err,
-                    }
                 }
                 ' ' => {
-                    if entry.starts_with(".(") {
-                        entry.push(c);
-                        continue;
+                    // if there is previous entry, commit it as identifier
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens_chan,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
                     }
-
-                    commit_arbitrary(
-                        entry.clone(),
-                        &tokens_chan,
-                        &debug_lexer,
-                        line + 1,
-                        column + 1,
-                    );
-                    entry.clear();
                 }
                 '"' => {
                     // start of a string literal, assert as literals
@@ -172,17 +200,19 @@ pub fn Tokenize<R: Sized, Number>(
                                             str: Some(entry.clone()),
                                             num: None,
                                             position: Position {
-                                                line: line + 1,
+                                                line,
                                                 column: column + 1,
                                             },
                                         },
-                                        &tokens_chan,
+                                        tokens_chan,
                                         &debug_lexer,
-                                    );
-                                    continue 'NEXT_COLUMN_PARSER;
+                                    )?;
+                                    continue;
                                 }
                                 _ => {
                                     entry.push(c);
+                                    last_line_column.0 = line;
+                                    last_line_column.1 = column + 1;
                                 }
                             },
                             None => {
@@ -191,23 +221,35 @@ pub fn Tokenize<R: Sized, Number>(
                                     message: format!("missing trailing symbol '\"'"),
                                 })
                             }
-                        }
+                        };
                     }
                 }
                 ':' => {
+                    // if there is previous entry, commit it as identifier
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens_chan,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     commit(
                         Tok {
-                            kind: Kind::CommaSep,
+                            kind: Kind::Colon,
                             str: None,
                             num: None,
                             position: Position {
-                                line: line + 1,
+                                line,
                                 column: column + 1,
                             },
                         },
-                        &tokens_chan,
+                        tokens_chan,
                         &debug_lexer,
-                    );
+                    )?;
                 }
                 '_' => {
                     commit(
@@ -216,30 +258,41 @@ pub fn Tokenize<R: Sized, Number>(
                             str: None,
                             num: None,
                             position: Position {
-                                line: line + 1,
+                                line,
                                 column: column + 1,
                             },
                         },
-                        &tokens_chan,
+                        tokens_chan,
                         &debug_lexer,
-                    );
+                    )?;
                     entry.clear();
                 }
                 ',' => {
+                    // if there is previous entry, commit it as identifier
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens_chan,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     commit(
                         Tok {
-                            kind: Kind::CommaSep,
+                            kind: Kind::Comma,
                             str: None,
                             num: None,
                             position: Position {
-                                line: line + 1,
+                                line,
                                 column: column + 1,
                             },
                         },
-                        &tokens_chan,
+                        tokens_chan,
                         &debug_lexer,
-                    );
-                    entry.clear();
+                    )?;
                 }
                 '!' => {
                     commit(
@@ -248,13 +301,13 @@ pub fn Tokenize<R: Sized, Number>(
                             str: None,
                             num: None,
                             position: Position {
-                                line: line + 1,
+                                line,
                                 column: column + 1,
                             },
                         },
                         &tokens_chan,
                         &debug_lexer,
-                    );
+                    )?;
                     entry.clear();
                 }
                 '?' => {
@@ -264,52 +317,57 @@ pub fn Tokenize<R: Sized, Number>(
                             str: None,
                             num: None,
                             position: Position {
-                                line: line + 1,
+                                line,
                                 column: column + 1,
                             },
                         },
                         &tokens_chan,
                         &debug_lexer,
-                    );
+                    )?;
                     entry.clear();
                 }
                 _ => {
                     entry.push(c);
-                    last_line_column.0 = line + 1;
+                    last_line_column.0 = line;
                     last_line_column.1 = column + 1;
                 }
             }
         }
+        buf.clear();
+        line += 1;
     }
 
-    commit_arbitrary(
-        entry,
-        &tokens_chan,
-        &debug_lexer,
-        last_line_column.0,
-        last_line_column.1,
-    );
+    if entry.len() > 0 {
+        commit_arbitrary(
+            entry.clone(),
+            tokens_chan,
+            &debug_lexer,
+            last_line_column.0,
+            col_fn(last_line_column.1, entry.len()),
+        )?;
+    }
 
     Ok(())
 }
 
-fn commit<Number>(tok: Tok<Number>, tokens_chan: &Sender<Tok<Number>>, debug_lexer: &bool) {
+fn commit<T>(tok: Tok<T>, tokens_chan: &Sender<Tok<T>>, debug_lexer: &bool) -> Result<(), Err> {
     if *debug_lexer {
         log_debug(&format!("lexer -> {}", tok.string()));
     }
-    tokens_chan.send(tok).unwrap();
+    tokens_chan.send(tok)?;
+    Ok(())
 }
 
-fn commit_arbitrary<Number>(
+fn commit_arbitrary<T>(
     entry: String,
-    tokens_chan: &Sender<Tok<Number>>,
+    tokens_chan: &Sender<Tok<T>>,
     debug_lexer: &bool,
     line: usize,
     column: usize,
-) {
+) -> Result<(), Err> {
     // whitespace, nothing to parse
     if entry.is_empty() {
-        return;
+        return Ok(());
     }
 
     let type_token = |kind| {
@@ -374,20 +432,26 @@ fn commit_arbitrary<Number>(
         ),
 
         _ => {
-            if !entry.is_empty() && entry.parse::<f64>().is_ok() {
-                commit(
+            // check if entry string is numerical
+            if <f64>::from_str_radix(&entry.clone(), 10).is_ok() {
+                return commit(
                     Tok {
                         kind: Kind::NumberLiteral,
                         str: Some(entry.to_string()),
                         num: None,
-                        position: Position {
-                            line,
-                            column: { column - entry.len() },
-                        },
+                        position: Position { line, column },
                     },
                     tokens_chan,
                     debug_lexer,
                 );
+            }
+
+            // identifiers should not start with a number: a-z, A-Z, or _
+            if !IDENTIFIER_REGEX.is_match(entry.as_str()) {
+                return Err(Err {
+                    reason: ErrorReason::Syntax,
+                    message: format!("invalid identifier: {}", entry),
+                });
             }
 
             commit(
@@ -395,14 +459,232 @@ fn commit_arbitrary<Number>(
                     kind: Kind::Identifier,
                     str: Some(entry.to_string()),
                     num: None,
-                    position: Position {
-                        line,
-                        column: { column - entry.len() },
-                    },
+                    position: Position { line, column },
                 },
                 tokens_chan,
                 debug_lexer,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::sync::mpsc::{channel, TryRecvError};
+
+    #[test]
+    fn test_tokenize() {
+        let (tx, rx) = channel::<Tok<()>>();
+        let mut buf_reader: BufReader<&[u8]>;
+
+        // comments are ignored
+        {
+            buf_reader = BufReader::new("// this is a comment".as_bytes());
+            match tokenize(&mut buf_reader, &tx, true, true) {
+                Ok(_) => (),
+                Err(e) => panic!("error: {}", e.message),
+            }
+            assert_eq!(
+                rx.try_recv().expect_err("recv chan must fail"),
+                TryRecvError::Empty
+            );
+
+            buf_reader = BufReader::new("    // this is a spaced comment".as_bytes());
+            match tokenize(&mut buf_reader, &tx, true, true) {
+                Ok(_) => (),
+                Err(e) => panic!("error: {}", e.message),
+            }
+            assert_eq!(
+                rx.try_recv().expect_err("recv chan must fail"),
+                TryRecvError::Empty
+            );
+        }
+
+        // single char tokens
+        {
+            buf_reader = BufReader::new(",".as_bytes());
+            match tokenize(&mut buf_reader, &tx, true, true) {
+                Ok(_) => (),
+                Err(e) => panic!("error: {}", e.message),
+            }
+            assert_eq!(
+                rx.try_recv().expect("recv chan does not fail"),
+                Tok {
+                    kind: Kind::Comma,
+                    str: None,
+                    num: None,
+                    position: Position { line: 1, column: 1 }
+                }
+            );
+
+            buf_reader = BufReader::new(":".as_bytes());
+            match tokenize(&mut buf_reader, &tx, true, true) {
+                Ok(_) => (),
+                Err(e) => panic!("error: {}", e.message),
+            }
+            assert_eq!(
+                rx.try_recv().expect("recv chan does not fail"),
+                Tok {
+                    kind: Kind::Colon,
+                    str: None,
+                    num: None,
+                    position: Position { line: 1, column: 1 }
+                }
+            );
+        }
+
+        // tokenize a function signature
+        {
+            buf_reader = BufReader::new("sum: a, b int -> int".as_bytes());
+            match tokenize(&mut buf_reader, &tx, true, true) {
+                Ok(_) => (),
+                Err(e) => panic!("error: {}", e.message),
+            }
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan does not fail"),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("sum".to_string()),
+                    num: None,
+                    position: Position { line: 1, column: 1 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::Colon,
+                    str: None,
+                    num: None,
+                    position: Position { line: 1, column: 4 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("a".to_string()),
+                    num: None,
+                    position: Position { line: 1, column: 6 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::Comma,
+                    str: None,
+                    num: None,
+                    position: Position { line: 1, column: 7 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("b".to_string()),
+                    num: None,
+                    position: Position { line: 1, column: 9 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::TypeName(Type::Int32),
+                    str: None,
+                    num: None,
+                    position: Position {
+                        line: 1,
+                        column: 11
+                    }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::FunctionArrow,
+                    str: None,
+                    num: None,
+                    position: Position {
+                        line: 1,
+                        column: 15
+                    }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::TypeName(Type::Int32),
+                    str: None,
+                    num: None,
+                    position: Position { line: 1, column: 18 }
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_commit_arbitrary() {
+        let (tx, rx) = channel::<Tok<()>>();
+
+        commit_arbitrary("uint8".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok::<()> {
+                kind: Kind::TypeName(Type::Uint8),
+                str: None,
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        commit_arbitrary("->".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok::<()> {
+                kind: Kind::FunctionArrow,
+                str: None,
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        commit_arbitrary("123.23".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok::<()> {
+                kind: Kind::NumberLiteral,
+                str: Some("123.23".to_string()),
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        // test random identifier
+        commit_arbitrary("_abc".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok::<()> {
+                kind: Kind::Identifier,
+                str: Some("_abc".to_string()),
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        assert_eq!(
+            commit_arbitrary("123abc".to_string(), &tx, &false, 1, 1).unwrap_err(),
+            Err {
+                reason: ErrorReason::Syntax,
+                message: "invalid identifier: 123abc".to_string()
+            }
+        );
     }
 }
