@@ -8,11 +8,11 @@ repeat: s string, n int -> string
     if n == 0 ? = s ! = s + (repeat s n - 1)
 
 // loop a function f, n times
-loop: f .(_ int -> float64), n int -> ()
+loop: f (int -> float64), n int -> ()
     if n > 0 ?  (f ()) = loop f n - 1 ! = ()
 
 // graph a single point
-draw: x int, fn .(int -> float64), symbol string -> ()
+draw: x int, fn (int -> float64), symbol string -> ()
     n is (fn x / 2) + 1
     fmt::log (repeat " " (math::floor 20 * n)) + symbol
 
@@ -20,5 +20,5 @@ draw: x int, fn .(int -> float64), symbol string -> ()
 drawRec: max int -> ()
     if max == 0 ? = 0
         !   draw max math::sin "+"
-		    draw max .(x int -> float64 = (math::cos x) + 0.7) "o"
+		    draw max (x int -> float64 = (math::cos x) + 0.7) "o"
             = drawRec max - 1

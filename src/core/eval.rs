@@ -1,196 +1,310 @@
+use self::value::Value;
+
 use super::{
     error::ErrorReason,
     log::{log_debug, log_err},
     parser::Node,
 };
-use num_traits::Num;
 use std::{borrow::Borrow, cell::RefCell, collections::HashMap, env, rc::Rc, sync::mpsc::Receiver};
 
 const MAX_PRINT_LEN: usize = 120;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Type {
-    // Unsigned integer types.
-    Uint8, // `byte` is an alias
-    Uint16,
-    Uint32,
-    Uint64, // `uint` is an alias
+pub mod r#type {
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    pub enum Type {
+        // Unsigned integer types.
+        Uint8, // `byte` is an alias
+        Uint16,
+        Uint32,
+        Uint64, // `uint` is an alias
 
-    // Signed integer types.
-    Int8,
-    Int16,
-    Int32, // `int` | `rune` is an alias
-    Int64,
+        // Signed integer types.
+        Int8,
+        Int16,
+        Int32, // `int` | `rune` is an alias
+        Int64,
 
-    // Floating point types.
-    Float32,
-    Float64, // `float` is an alias
+        // Floating point types.
+        Float32,
+        Float64, // `float` is an alias
 
-    // Boolean type.
-    Bool,
+        // Boolean type.
+        Bool,
 
-    // String type.
-    String,
+        // String type.
+        String,
 
-    // Array type.
-    Array { r#type: Box<Type> },
+        // Array type.
+        Array { r#type: Box<Type> },
 
-    // Map type.
-    Map,
+        // Map type.
+        Map,
 
-    // Function type.
-    Function,
+        // Function type.
+        Function,
 
-    // Interface type.
-    Interface,
+        // Interface type.
+        Interface,
 
-    // Pointer type.
-    Pointer,
+        // Struct type.
+        Struct,
 
-    // Struct type.
-    Struct,
+        // Enum type.
+        Enum,
 
-    // Enum type.
-    Enum,
-
-    // Empty type.
-    Empty,
-}
-
-// type aliases
-impl Type {
-    pub fn string(&self) -> String {
-        match self {
-            Type::Uint8 => "byte".to_string(),
-            Type::Uint16 => "uint16".to_string(),
-            Type::Uint32 => "uint32".to_string(),
-            Type::Uint64 => "uint".to_string(),
-            Type::Int8 => "int8".to_string(),
-            Type::Int16 => "int16".to_string(),
-            Type::Int32 => "int".to_string(),
-            Type::Int64 => "int64".to_string(),
-            Type::Float32 => "float32".to_string(),
-            Type::Float64 => "float".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::String => "string".to_string(),
-            Type::Array { r#type } => format!("[]{}", r#type.string()),
-            Type::Map => "map".to_string(),
-            Type::Function => "function".to_string(),
-            Type::Interface => "interface".to_string(),
-            Type::Pointer => "pointer".to_string(),
-            Type::Struct => "struct".to_string(),
-            Type::Enum => "enum".to_string(),
-            Type::Empty => "empty".to_string(),
-        }
-    }
-}
-
-/// Value represents any value in the Speak programming language.
-/// Each value corresponds to some primitive or object value created
-/// during the execution of a Speak program.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    // Numerical values.
-    Uint8Value(u8),
-    Uint16Value(u16),
-    Uint32Value(u32),
-    Uint64Value(u64),
-    Int8Value(i8),
-    Int16Value(i16),
-    Int32Value(i32),
-    Int64Value(i64),
-    Float32Value(f32),
-    Float64Value(f64),
-
-    /// BoolValue represents a boolean value in Speak.
-    BoolValue(bool),
-
-    /// StringValue represents all characters and strings in Speak.
-    StringValue(Vec<u8>),
-
-    /// EmptyValue is the value of the empty identifier.
-    /// it is globally unique and matches everything in equality.
-    EmptyValue,
-}
-
-impl Value {
-    // value_type returns the type of the value.
-    fn value_type(&self) -> Type {
-        match self {
-            Value::Uint8Value(_) => Type::Uint8,
-            Value::Uint16Value(_) => Type::Uint16,
-            Value::Uint32Value(_) => Type::Uint32,
-            Value::Uint64Value(_) => Type::Uint64,
-            Value::Int8Value(_) => Type::Int8,
-            Value::Int16Value(_) => Type::Int16,
-            Value::Int32Value(_) => Type::Int32,
-            Value::Int64Value(_) => Type::Int64,
-            Value::Float32Value(_) => Type::Float32,
-            Value::Float64Value(_) => Type::Float64,
-
-            Value::EmptyValue => Type::Empty,
-            Value::StringValue(_) => Type::String,
-            Value::BoolValue(_) => Type::Bool,
-        }
+        // Empty type.
+        Empty,
     }
 
-    /// string returns the string representation of the value.
-    pub fn string(&self) -> String {
-        match self {
-            Value::Uint8Value(v) => v.to_string(),
-            Value::Uint16Value(v) => v.to_string(),
-            Value::Uint32Value(v) => v.to_string(),
-            Value::Uint64Value(v) => v.to_string(),
-            Value::Int8Value(v) => v.to_string(),
-            Value::Int16Value(v) => v.to_string(),
-            Value::Int32Value(v) => v.to_string(),
-            Value::Int64Value(v) => v.to_string(),
-            Value::Float32Value(v) => v.to_string(),
-            Value::Float64Value(v) => v.to_string(),
-
-            Value::BoolValue(b) => b.to_string(),
-
-            Value::StringValue(s) => String::from_utf8(s.clone()).unwrap(),
-
-            Value::EmptyValue => String::from("()"),
-        }
-    }
-
-    /// Equals reports whether the given value is deep-equal to the
-    /// receiving value. It does not compare references.
-    fn equals(&self, value: Value) -> bool {
-        if Value::EmptyValue == value || Value::EmptyValue == self.clone() {
-            return true;
-        }
-
-        let compare_numeric = || {
-            if self.clone() != value {
-                return <f64 as Num>::from_str_radix(&self.string(), 10).unwrap()
-                    == <f64 as Num>::from_str_radix(&value.string(), 10).unwrap();
+    // type aliases
+    impl Type {
+        pub fn string(&self) -> String {
+            match self {
+                Type::Uint8 => "byte".to_string(),
+                Type::Uint16 => "uint16".to_string(),
+                Type::Uint32 => "uint32".to_string(),
+                Type::Uint64 => "uint".to_string(),
+                Type::Int8 => "int8".to_string(),
+                Type::Int16 => "int16".to_string(),
+                Type::Int32 => "int".to_string(),
+                Type::Int64 => "int64".to_string(),
+                Type::Float32 => "float32".to_string(),
+                Type::Float64 => "float".to_string(),
+                Type::Bool => "bool".to_string(),
+                Type::String => "string".to_string(),
+                Type::Array { r#type } => format!("[]{}", r#type.string()),
+                Type::Map => "map".to_string(),
+                Type::Function => "function".to_string(),
+                Type::Interface => "interface".to_string(),
+                Type::Struct => "struct".to_string(),
+                Type::Enum => "enum".to_string(),
+                Type::Empty => "empty".to_string(),
             }
-            true
-        };
+        }
+    }
+}
 
-        match self {
-            Value::Uint8Value(_)
-            | Value::Uint16Value(_)
-            | Value::Uint32Value(_)
-            | Value::Uint64Value(_)
-            | Value::Int8Value(_)
-            | Value::Int16Value(_)
-            | Value::Int32Value(_)
-            | Value::Int64Value(_)
-            | Value::Float32Value(_)
-            | Value::Float64Value(_) => compare_numeric(),
+pub mod value {
+    use super::r#type::Type;
 
-            Value::BoolValue(b) => match value {
-                Value::BoolValue(b2) => b == &b2,
-                _ => false,
-            },
+    /// Value represents any value in the Speak programming language.
+    /// Each value corresponds to some primitive or object value created
+    /// during the execution of a Speak program.
+    pub trait Value: Sized + std::fmt::Debug + Clone {
+        // This value stores the actual value type.
+        type UndelyingValue;
 
-            Value::StringValue(_) => self.string() == value.string(),
+        fn value_type(&self) -> Type;
+        fn string(&self) -> String;
+        fn equals(&self, value: Self::UndelyingValue) -> bool;
+    }
 
-            _ => false,
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Uint8(u8);
+
+    impl Value for Uint8 {
+        type UndelyingValue = u8;
+
+        fn value_type(&self) -> Type {
+            Type::Uint8
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: u8) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Uint16(u16);
+
+    impl Value for Uint16 {
+        type UndelyingValue = u16;
+
+        fn value_type(&self) -> Type {
+            Type::Uint16
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: u16) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Uint32(u32);
+
+    impl Value for Uint32 {
+        type UndelyingValue = u32;
+
+        fn value_type(&self) -> Type {
+            Type::Uint32
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: u32) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Uint64(u64);
+
+    impl Value for Uint64 {
+        type UndelyingValue = u64;
+
+        fn value_type(&self) -> Type {
+            Type::Uint64
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: u64) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Int8(i8);
+
+    impl Value for Int8 {
+        type UndelyingValue = i8;
+
+        fn value_type(&self) -> Type {
+            Type::Int8
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: i8) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Int16(i16);
+
+    impl Value for Int16 {
+        type UndelyingValue = i16;
+
+        fn value_type(&self) -> Type {
+            Type::Int16
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: i16) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Int32(i32);
+
+    impl Value for Int32 {
+        type UndelyingValue = i32;
+
+        fn value_type(&self) -> Type {
+            Type::Int32
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: i32) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Int64(i64);
+
+    impl Value for Int64 {
+        type UndelyingValue = i64;
+
+        fn value_type(&self) -> Type {
+            Type::Int64
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: i64) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    struct Float32(f32);
+
+    impl Value for Float32 {
+        type UndelyingValue = f32;
+
+        fn value_type(&self) -> Type {
+            Type::Float32
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: f32) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    struct Float64(f64);
+
+    impl Value for Float64 {
+        type UndelyingValue = f64;
+
+        fn value_type(&self) -> Type {
+            Type::Float64
+        }
+
+        fn string(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn equals(&self, value: f64) -> bool {
+            self.0 == value
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    pub struct String_(pub String);
+
+    impl Value for String_ {
+        type UndelyingValue = String;
+
+        fn value_type(&self) -> Type {
+            Type::String
+        }
+
+        fn string(&self) -> String {
+            self.0.clone()
+        }
+
+        fn equals(&self, value: String) -> bool {
+            self.0 == value
         }
     }
 }
@@ -200,18 +314,18 @@ pub struct Engine {}
 /// ValueTable is used anytime a map of names/labels to Speak Values is needed,
 /// and is notably used to represent stack frames/heaps and CompositeValue dictionaries.
 #[derive(Debug, Clone)]
-pub struct ValueTable(HashMap<String, Value>);
+pub struct ValueTable<V: Value>(HashMap<String, V>);
 
-impl ValueTable {
-    fn new(map: HashMap<String, Value>) -> Self {
+impl<V: Value> ValueTable<V> {
+    fn new(map: HashMap<String, V>) -> Self {
         Self(map)
     }
 
-    fn get(&self, name: &str) -> Option<Value> {
-        self.0.get(name).cloned()
+    fn get(&self, name: &str) -> Option<&V> {
+        self.0.get(name)
     }
 
-    fn set(&mut self, key: String, value: Value) {
+    fn set(&mut self, key: String, value: V) {
         self.0.insert(key, value);
     }
 }
@@ -219,21 +333,21 @@ impl ValueTable {
 /// StackFrame represents the heap of variables local to a particular function call frame,
 /// and recursively references other parent StackFrames internally.
 #[derive(Debug, Clone)]
-pub enum StackFrame {
-    Cons(Rc<RefCell<ValueTable>>, Rc<StackFrame>),
+pub enum StackFrame<V: Value> {
+    Cons(Rc<RefCell<ValueTable<V>>>, Rc<StackFrame<V>>),
     Nil,
 }
 
-impl StackFrame {
-    fn new(value_table: ValueTable, parent: StackFrame) -> Self {
+impl<V: Value> StackFrame<V> {
+    fn new(value_table: ValueTable<V>, parent: StackFrame<V>) -> Self {
         Self::Cons(Rc::new(RefCell::new(value_table)), Rc::new(parent))
     }
 
     /// Get a value from the stack frame chain.
-    fn get(&self, name: &str) -> Option<Value> {
+    fn get(&self, name: &str) -> Option<V> {
         if let StackFrame::Cons(frame, next_frame) = self {
-            match (*frame.clone()).borrow().get(name) {
-                Some(v) => return Some(v),
+            match frame.as_ref().borrow().get(name) {
+                Some(v) => return Some(v.clone()),
                 None => return next_frame.get(name),
             }
         }
@@ -241,19 +355,16 @@ impl StackFrame {
     }
 
     /// sets a value to the provided stack frame.
-    fn set(&mut self, name: String, val: Value) {
+    fn set(&mut self, name: String, val: V) {
         if let StackFrame::Cons(frame, _) = self {
-            (*frame.clone()).borrow_mut().set(name.clone(), val.clone())
+            frame.as_ref().borrow_mut().set(name, val)
         }
     }
 
     /// updates a value in the stack frame chain.
-    fn up(&mut self, name: String, val: Value) {
+    fn up(&mut self, name: String, val: V) {
         if let StackFrame::Cons(frame, next_frame) = self {
-            (*frame.clone())
-                .borrow_mut()
-                .0
-                .insert(name.clone(), val.clone());
+            frame.as_ref().borrow_mut().0.insert(name.clone(), val);
         }
     }
 
@@ -261,7 +372,8 @@ impl StackFrame {
     fn string(&self) -> Option<String> {
         if let StackFrame::Cons(frame, next_frame) = self {
             let mut entries = Vec::new();
-            for (k, v) in (*frame.clone()).borrow().0.clone() {
+
+            for (k, v) in &frame.as_ref().borrow().0 {
                 let mut v_str = v.string();
                 if v_str.len() > MAX_PRINT_LEN {
                     v_str = format!("{}...", &v_str[..MAX_PRINT_LEN])
@@ -282,17 +394,17 @@ impl StackFrame {
 
 /// Context represents a single, isolated execution context with its global heap,
 /// imports, call stack, and cwd (working directory).
-pub struct Context {
+pub struct Context<V: Value> {
     /// cwd is an always-absolute path to current working dir (of module system)
     cwd: String,
     /// The currently executing file's path, if any
     file: String,
     engine: Engine,
     /// Frame represents the Context's global heap
-    frame: StackFrame,
+    frame: StackFrame<V>,
 }
 
-impl Context {
+impl<V: Value> Context<V> {
     fn reset_wd(&mut self) {
         self.cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
     }
@@ -306,9 +418,9 @@ impl Context {
     // Takes a channel of Nodes to evaluate, and executes the Speak programs defined
     // in the syntax tree. Returning the last value of the last expression in the AST,
     // or an error to stderr if there was a runtime error.
-    pub fn eval(&self, nodes: Receiver<Node>, dump_frame: bool) {
+    pub fn eval<N: Node<V>>(&mut self, nodes: Receiver<N>, dump_frame: bool) {
         for node in nodes {
-            if let Err(err) = node.eval(&self.frame, false) {
+            if let Err(err) = node.eval(&mut self.frame, false) {
                 log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
                 break;
             }
@@ -326,23 +438,14 @@ mod tests {
 
     #[test]
     fn test_stack_frame() {
-        let mut frame = StackFrame::new(
-            ValueTable::new(HashMap::from([(
-                String::from("a"),
-                Value::StringValue("hello".into()),
-            )])),
-            StackFrame::Nil,
-        );
+        let mut frame = StackFrame::new(ValueTable::new(HashMap::new()), StackFrame::Nil);
 
         // test stackframe.set(), stackframe.get()
-        frame.set(
-            "a".to_string(),
-            Value::StringValue("hello".to_string().into_bytes()),
-        );
+        frame.set("a".to_string(), value::String_("hello".to_string()));
         assert!(frame
             .get("a")
             .expect("key must be present")
-            .equals(Value::StringValue("hello".to_string().into_bytes())));
+            .equals("hello".to_string()));
 
         // test stackframe.string()
         assert_eq!(
@@ -351,14 +454,11 @@ mod tests {
         );
 
         // test stackframe.up(), stackframe.get()
-        frame.up(
-            "a".to_string(),
-            Value::StringValue("mutated value".to_string().into_bytes()),
-        );
+        frame.up("a".to_string(), value::String_("mutated value".to_string()));
         assert!(frame
             .get("a")
             .expect("key must be present")
-            .equals(Value::StringValue("mutated value".to_string().into_bytes())));
+            .equals("mutated value".to_string()));
 
         //test stackframe.get, in parent frame
         let frame = StackFrame::Cons(
@@ -368,6 +468,6 @@ mod tests {
         assert!(frame
             .get("a")
             .expect("key must be present")
-            .equals(Value::StringValue("mutated value".to_string().into_bytes())));
+            .equals("mutated value".to_string()));
     }
 }

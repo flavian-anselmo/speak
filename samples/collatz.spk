@@ -7,19 +7,19 @@ next: n int -> int
 sequence: start int -> []int
     where start < 2
         ? = start
-        ! = (sub: n int, acc []int -> []int
+        !   sub is _: n int, acc []int -> []int
                 if n == 1 = acc
-                = sub (next n) (len acc)
-            start [start:])
+                = sub (next n) (len acc) }
+            = sub start [start:]
 
 longestSequenceUnder: max int -> []int
-    sub is .(_: n, prevMax int, prevSeq []int -> []int
+    sub is _: n, prevMax int, prevSeq []int -> []int
         where n == max
             ? = prevSeq
             !   currSeq is sequence n
 		        currMax is len(currSeq)
 		        if currMax > prevMax == true = sub n + 1 currMax currSeq
-			    = sub n + 1 prevMax prevSeq)
+			    = sub n + 1 prevMax prevSeq
     = sub 1 0 []
 
 main: () -> ()

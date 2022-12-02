@@ -1,6 +1,6 @@
 use super::{
     error::{Err, ErrorReason},
-    eval::Type,
+    eval::r#type::Type,
     log::log_debug,
 };
 use num_traits::Num;
@@ -19,7 +19,7 @@ lazy_static! {
 // of tokens in a Speak program
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
-    FunctionExpr,
+    Expr,
 
     Identifier,
     EmptyIdentifier,
@@ -47,7 +47,7 @@ pub enum Kind {
 impl Kind {
     fn string(&self) -> String {
         match self {
-            Kind::FunctionExpr => "function expression".to_string(),
+            Kind::Expr => "expression".to_string(),
 
             Kind::Identifier => "identifier".to_string(),
             Kind::EmptyIdentifier => "'_'".to_string(),
@@ -74,6 +74,10 @@ impl Kind {
     }
 }
 
+pub struct FnBody {
+    pub body: Vec<Kind>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Position {
     line: usize,
@@ -96,7 +100,7 @@ pub struct Tok<T> {
     position: Position,
 }
 
-impl<Number> Tok<Number> {
+impl<T> Tok<T> {
     fn string(&self) -> String {
         match self.kind {
             Kind::Identifier | Kind::StringLiteral | Kind::NumberLiteral => {
@@ -125,7 +129,6 @@ pub fn tokenize<T>(
     let mut entry = String::new();
     let mut last_line_column = (0, 0);
     let mut comment = false;
-    let mut line = 1;
 
     // helper cal_col fn
     let col_fn = |col, len| {
@@ -135,6 +138,7 @@ pub fn tokenize<T>(
         return col - (len - 1);
     };
 
+    let mut line = 1;
     'NEXT_LINE_PARSER: for _ in unbuffered.read_line(&mut buf) {
         // skip line comments
         if buf.starts_with("//") {
@@ -144,7 +148,6 @@ pub fn tokenize<T>(
         }
 
         let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
-        // 'NEXT_COLUMN_PARSER:
         while let Some((column, c)) = buf_iter.next() {
             // skip if char is newline
             if c == 0xA as char {
@@ -325,6 +328,12 @@ pub fn tokenize<T>(
                         &debug_lexer,
                     )?;
                     entry.clear();
+                }
+                '{' => {
+                    // start of function expression
+                }
+                '(' => {
+                    // start of expression
                 }
                 _ => {
                     entry.push(c);
@@ -624,7 +633,10 @@ mod test {
                     kind: Kind::TypeName(Type::Int32),
                     str: None,
                     num: None,
-                    position: Position { line: 1, column: 18 }
+                    position: Position {
+                        line: 1,
+                        column: 18
+                    }
                 }
             );
         }
