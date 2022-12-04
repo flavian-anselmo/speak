@@ -19,8 +19,7 @@ lazy_static! {
 // of tokens in a Speak program
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
-    Expr,
-
+    // Expr,
     Identifier,
     EmptyIdentifier,
 
@@ -28,6 +27,21 @@ pub enum Kind {
     FalseLiteral,
     NumberLiteral,
     StringLiteral,
+
+    NegationOp,
+    AssignOp,
+    AccessorOp,
+    AddOp,
+    SubtractOp,
+    MultiplyOp,
+    DivideOp,
+    ModulusOp,
+    LogicalAndOp,
+    LogicalOrOp,
+    LogicalXOrOp,
+    GreaterThanOp,
+    LessThanOp,
+    EqualOp,
 
     TypeName(Type),
     Comma,
@@ -45,10 +59,9 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn string(&self) -> String {
+    pub fn string(&self) -> String {
         match self {
-            Kind::Expr => "expression".to_string(),
-
+            // Kind::Expr => "expression".to_string(),
             Kind::Identifier => "identifier".to_string(),
             Kind::EmptyIdentifier => "'_'".to_string(),
 
@@ -63,6 +76,21 @@ impl Kind {
 
             Kind::Bang => "'!'".to_string(),
             Kind::QuestionMark => "'?'".to_string(),
+
+            Kind::NegationOp => "'~'".to_string(),
+            Kind::AssignOp => "':='".to_string(),
+            Kind::AccessorOp => "'.'".to_string(),
+            Kind::AddOp => "'+'".to_string(),
+            Kind::SubtractOp => "'-'".to_string(),
+            Kind::MultiplyOp => "'*'".to_string(),
+            Kind::DivideOp => "'/'".to_string(),
+            Kind::ModulusOp => "'%'".to_string(),
+            Kind::LogicalAndOp => "'&'".to_string(),
+            Kind::LogicalOrOp => "'|'".to_string(),
+            Kind::LogicalXOrOp => "'^'".to_string(),
+            Kind::GreaterThanOp => "'>'".to_string(),
+            Kind::LessThanOp => "'<'".to_string(),
+            Kind::EqualOp => "'='".to_string(),
 
             Kind::FunctionArrow => "->".to_string(),
 
@@ -111,6 +139,7 @@ impl<T> Tok<T> {
                     self.position.string()
                 )
             }
+
             _ => format!("{} [{}]", self.kind.string(), self.position.string()),
         }
     }
@@ -393,16 +422,10 @@ fn commit_arbitrary<T>(
     };
 
     match entry.as_str() {
-        "uint8" | "byte" => type_token(Kind::TypeName(Type::Uint8)),
-        "uint16" => type_token(Kind::TypeName(Type::Uint16)),
-        "uint32" => type_token(Kind::TypeName(Type::Uint32)),
-        "uint64" | "uint" => type_token(Kind::TypeName(Type::Uint64)),
-        "int8" => type_token(Kind::TypeName(Type::Int8)),
-        "int16" => type_token(Kind::TypeName(Type::Int16)),
-        "int32" | "int" | "rune" => type_token(Kind::TypeName(Type::Int32)),
-        "int64" => type_token(Kind::TypeName(Type::Int64)),
-        "float32" => type_token(Kind::TypeName(Type::Float32)),
-        "float64" | "float" => type_token(Kind::TypeName(Type::Float64)),
+        "uint8" | "byte" | "uint16" | "uint32" | "uint64" | "uint" | "int8" | "int16" | "int32"
+        | "int" | "rune" | "int64" | "float32" | "float64" | "float" => {
+            type_token(Kind::TypeName(number_type_to_enum(&entry)))
+        }
 
         "bool" => type_token(Kind::TypeName(Type::Bool)),
         "string" => type_token(Kind::TypeName(Type::String)),
@@ -474,6 +497,23 @@ fn commit_arbitrary<T>(
                 debug_lexer,
             )
         }
+    }
+}
+
+/// takes a type identifier for a number and returns the corresponding type
+pub fn number_type_to_enum(name: &str) -> Type {
+    match name {
+        "uint8" | "byte" => Type::Uint8,
+        "uint16" => Type::Uint16,
+        "uint32" => Type::Uint32,
+        "uint64" | "uint" => Type::Uint64,
+        "int8" => Type::Int8,
+        "int16" => Type::Int16,
+        "int32" | "int" | "rune" => Type::Int32,
+        "int64" => Type::Int64,
+        "float32" => Type::Float32,
+        "float64" | "float" => Type::Float64,
+        _ => panic!("invalid number type"),
     }
 }
 
