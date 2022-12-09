@@ -5,8 +5,7 @@ use super::{
     log::{log_debug, log_err},
     parser::Node,
 };
-use num_traits::{Num, Signed};
-use std::{borrow::Borrow, cell::RefCell, collections::HashMap, env, rc::Rc, sync::mpsc::Receiver};
+use std::{collections::HashMap, env, sync::mpsc::Receiver};
 
 const MAX_PRINT_LEN: usize = 120;
 
@@ -107,13 +106,9 @@ pub mod value {
         fn value_type(&self) -> Type;
         fn string(&self) -> String;
         fn equals(&self, value: Self::UnderlyingValue) -> bool;
-        fn mutate<F: FnMut(&mut Self::UnderlyingValue)>(&mut self, f: F);
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Uint8(u8);
-
-    impl Value for Uint8 {
+    impl Value for u8 {
         type UnderlyingValue = u8;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -125,22 +120,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: u8) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut u8)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Uint16(u16);
-
-    impl Value for Uint16 {
+    impl Value for u16 {
         type UnderlyingValue = u16;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -152,22 +140,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: u16) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut u16)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Uint32(u32);
-
-    impl Value for Uint32 {
+    impl Value for u32 {
         type UnderlyingValue = u32;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -179,22 +160,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: u32) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut u32)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Uint64(u64);
-
-    impl Value for Uint64 {
+    impl Value for u64 {
         type UnderlyingValue = u64;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -206,22 +180,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: u64) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut u64)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Int8(i8);
-
-    impl Value for Int8 {
+    impl Value for i8 {
         type UnderlyingValue = i8;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -233,22 +200,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: i8) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut i8)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Int16(i16);
-
-    impl Value for Int16 {
+    impl Value for i16 {
         type UnderlyingValue = i16;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -260,22 +220,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: i16) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut i16)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Int32(i32);
-
-    impl Value for Int32 {
+    impl Value for i32 {
         type UnderlyingValue = i32;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -287,22 +240,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: i32) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut i32)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub struct Int64(i64);
-
-    impl Value for Int64 {
+    impl Value for i64 {
         type UnderlyingValue = i64;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -314,22 +260,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: i64) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut i64)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Clone)]
-    pub struct Float32(f32);
-
-    impl Value for Float32 {
+    impl Value for f32 {
         type UnderlyingValue = f32;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -341,22 +280,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: f32) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut f32)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Clone)]
-    pub struct Float64(f64);
-
-    impl Value for Float64 {
+    impl Value for f64 {
         type UnderlyingValue = f64;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -368,22 +300,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: f64) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut f64)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    /// BooleanValue is either `true` or `false`
-    #[derive(Debug, PartialEq, Clone)]
-    pub struct Bool(pub bool);
-    impl Value for Bool {
+    impl Value for bool {
         type UnderlyingValue = bool;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -395,22 +320,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.to_string()
+            self.to_string()
         }
 
         fn equals(&self, value: bool) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut bool)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Clone)]
-    pub struct String_(pub String);
-
-    impl Value for String_ {
+    impl Value for String {
         type UnderlyingValue = String;
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -422,22 +340,15 @@ pub mod value {
         }
 
         fn string(&self) -> String {
-            self.0.clone()
+            self.clone()
         }
 
         fn equals(&self, value: String) -> bool {
-            self.0 == value
-        }
-
-        fn mutate<F: FnMut(&mut String)>(&mut self, mut f: F) {
-            f(&mut self.0)
+            self == &value
         }
     }
 
-    #[derive(Debug, PartialEq, Clone)]
-    pub struct Empty;
-
-    impl Value for Empty {
+    impl Value for () {
         type UnderlyingValue = ();
 
         fn as_any(&mut self) -> &mut dyn Any {
@@ -455,8 +366,6 @@ pub mod value {
         fn equals(&self, _: ()) -> bool {
             true
         }
-
-        fn mutate<F: FnMut(&mut ())>(&mut self, mut f: F) {}
     }
 }
 
@@ -493,6 +402,7 @@ pub enum StackFrame<V: Value> {
 }
 
 impl<V: Value> StackFrame<V> {
+    /// Creates a new stack frame with the provided value table and parent stack frame.
     fn new(value_table: VTable<V>, parent: StackFrame<V>) -> Self {
         Self::Frame {
             item: value_table,
@@ -500,23 +410,23 @@ impl<V: Value> StackFrame<V> {
         }
     }
 
-    /// Get a value from the stack frame chain.
+    /// Get a value from the current stack frame chain.
     pub fn get(&self, name: &str) -> Option<&V> {
-        if let StackFrame::Frame { item, next } = self {
+        if let StackFrame::Frame { item, next: _ } = self {
             return item.get(name);
         }
 
         return None;
     }
 
-    /// sets a value to the provided stack frame.
+    /// Sets a value to the provided stack frame.
     fn set(&mut self, name: String, val: V) {
         if let StackFrame::Frame { item, next: _ } = self {
             item.set(name, val)
         }
     }
 
-    /// updates a value in the stack frame chain.
+    /// Updates a value in the stack frame chain.
     fn up(&mut self, name: String, val: V) {
         if let StackFrame::Frame { item, next: _ } = self {
             let l = &mut item.0;
@@ -524,11 +434,10 @@ impl<V: Value> StackFrame<V> {
         }
     }
 
-    /// mutates the value(s) of a variable(s) in the stack frame according to the
-    /// provided function
+    /// Provides the vtable to the function provided for mutation.
     fn mutate<F: FnMut(&mut VTable<V>) -> Result<(), Err>>(&mut self, mut f: F) -> Result<(), Err> {
         match self {
-            StackFrame::Frame { item, next } => f(item),
+            StackFrame::Frame { item, next: _ } => f(item),
             StackFrame::Nil => Err(Err {
                 message: "frame not present".to_string(),
                 reason: ErrorReason::System,
@@ -571,33 +480,55 @@ pub struct Context<V: Value> {
     frame: StackFrame<V>,
 }
 
-// impl<'a, V: Value> Context<'a, V> {
-//     fn reset_wd(&mut self) {
-//         self.cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
-//     }
+impl<V: Value> Context<V> {
+    fn reset_wd(&mut self) {
+        self.cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
+    }
 
-//     pub fn dump(&self) {
-//         if let Some(s) = self.frame.string() {
-//             log_debug(&format!("frame_dump:\n{}", s));
-//         }
-//     }
+    pub fn dump(&self) {
+        if let Some(s) = self.frame.string() {
+            log_debug(&format!("frame_dump:\n{}", s));
+        }
+    }
 
-//     // Takes a channel of Nodes to evaluate, and executes the Speak programs defined
-//     // in the syntax tree. Returning the last value of the last expression in the AST,
-//     // or an error to stderr if there was a runtime error.
-//     pub fn eval<N: 'a + Node<'a, V>>(&'a mut self, nodes: Receiver<N>, dump_frame: bool) {
-//         for node in nodes {
-//             if let Err(err) = node.eval(&mut self.frame, false) {
-//                 log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
-//                 break;
-//             }
-//         }
+    // Takes a channel of Nodes to evaluate, and executes the Speak programs defined
+    // in the syntax tree. Returning the last value of the last expression in the AST,
+    // or an error to stderr if there was a runtime error.
+    pub fn eval<T: Value, N: Node<V>>(
+        &mut self,
+        nodes: Vec<&mut N>,
+        dump_frame: bool,
+    ) -> Result<V, Err> {
+        let len = nodes.len();
+        for (i, node) in nodes.into_iter().enumerate() {
+            match node.eval(&mut self.frame, false) {
+                Ok(val) => {
+                    if i == len - 1 {
+                        if dump_frame {
+                            self.dump();
+                        }
 
-//         if dump_frame {
-//             self.dump();
-//         }
-//     }
-// }
+                        // let bar: &dyn Bar = &123;
+                        //      let val: Box<dyn Value<UnderlyingValue = u8>> = val;
+                        // let val: Box<dyn Value> = Box::new(val);
+
+                        return Ok(val);
+                    }
+                }
+                Err(err) => {
+                    log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
+                    if dump_frame {
+                        self.dump();
+                    }
+
+                    log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
+                    return Err(err);
+                }
+            }
+        }
+        Ok(unimplemented!("this never calls"))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -608,7 +539,7 @@ mod tests {
         let mut frame = StackFrame::new(VTable::new(HashMap::new()), StackFrame::Nil);
 
         // test stackframe.set(), stackframe.get()
-        frame.set("a".to_string(), value::String_("hello".to_string()));
+        frame.set("a".to_string(), "hello".to_string());
         assert!(frame
             .get("a")
             .expect("key must be present")
@@ -621,7 +552,7 @@ mod tests {
         );
 
         // test stackframe.up(), stackframe.get()
-        frame.up("a".to_string(), value::String_("mutated value".to_string()));
+        frame.up("a".to_string(), "mutated value".to_string());
         assert!(frame
             .get("a")
             .expect("key must be present")
@@ -632,9 +563,6 @@ mod tests {
             item: VTable::new(HashMap::new()),
             next: Box::new(frame),
         };
-        assert!(frame
-            .get("a")
-            .expect("key must be present")
-            .equals("mutated value".to_string()));
+        assert!(frame.get("a").is_none())
     }
 }

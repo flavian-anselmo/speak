@@ -3,11 +3,11 @@ use super::{
     eval::StackFrame,
     eval::{
         r#type::Type,
-        value::{self, Bool, Value},
+        value::{self, Value},
     },
     lexer::{number_type_to_enum, Kind, Position, Tok},
 };
-use num_traits::{NumCast, Signed};
+use num_traits::{Num, Signed};
 use std::{
     any::Any,
     borrow::BorrowMut,
@@ -15,12 +15,12 @@ use std::{
 };
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
-pub trait Node<'a, V: Value> {
-    type UnderlyingType;
+pub trait Node<V: Value> {
+    type UnderlyingType: Value;
 
     fn string(&self) -> String;
     fn position(&self) -> &Position;
-    fn eval(
+    fn eval<'a>(
         &'a mut self,
         stack: &'a mut StackFrame<V>,
         allow_thunk: bool,
@@ -28,28 +28,28 @@ pub trait Node<'a, V: Value> {
 }
 
 #[derive(Debug, Clone)]
-pub struct NumberLiteralNode<T: num_traits::Num> {
+pub struct NumberLiteralNode<T: Value> {
     pub value: T,
     pub position: Position,
 }
 
-impl<'a, T, V> Node<'a, V> for NumberLiteralNode<T>
+impl<T, V> Node<V> for NumberLiteralNode<T>
 where
     V: Value,
-    T: num_traits::Num + std::fmt::Display,
+    T: Value,
 {
     type UnderlyingType = T;
 
     fn string(&self) -> String {
-        self.value.to_string()
+        self.value.string()
     }
 
     fn position(&self) -> &Position {
         &self.position
     }
 
-    fn eval(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&(T), Err> {
-        unimplemented!("NumberLiteralNode::eval is not implemented")
+    fn eval<'a>(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&'a T, Err> {
+        Ok(&self.value)
     }
 }
 
@@ -76,7 +76,7 @@ pub struct StringLiteralNode {
     pub position: Position,
 }
 
-impl<'a, V: Value> Node<'a, V> for StringLiteralNode {
+impl<V: Value> Node<V> for StringLiteralNode {
     type UnderlyingType = String;
 
     fn string(&self) -> String {
@@ -87,7 +87,7 @@ impl<'a, V: Value> Node<'a, V> for StringLiteralNode {
         &self.position
     }
 
-    fn eval(&mut self, _: &mut StackFrame<V>, _: bool) -> Result<&String, Err> {
+    fn eval<'a>(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&'a String, Err> {
         Ok(&self.value)
     }
 }
@@ -97,7 +97,7 @@ pub struct BoolLiteralNode {
     pub position: Position,
 }
 
-impl<'a, V: Value> Node<'a, V> for BoolLiteralNode {
+impl<V: Value> Node<V> for BoolLiteralNode {
     type UnderlyingType = bool;
 
     fn string(&self) -> String {
@@ -108,7 +108,7 @@ impl<'a, V: Value> Node<'a, V> for BoolLiteralNode {
         &self.position
     }
 
-    fn eval(&mut self, _: &mut StackFrame<V>, _: bool) -> Result<&bool, Err> {
+    fn eval<'a>(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&'a bool, Err> {
         Ok(&self.value)
     }
 }
@@ -116,8 +116,7 @@ impl<'a, V: Value> Node<'a, V> for BoolLiteralNode {
 pub struct EmptyIdentifierNode {
     pub position: Position,
 }
-
-impl<'a, V: Value> Node<'a, V> for EmptyIdentifierNode {
+impl<V: Value> Node<V> for EmptyIdentifierNode {
     type UnderlyingType = ();
 
     fn string(&self) -> String {
@@ -129,7 +128,7 @@ impl<'a, V: Value> Node<'a, V> for EmptyIdentifierNode {
     }
 
     fn eval(&mut self, _: &mut StackFrame<V>, _: bool) -> Result<&(), Err> {
-        unimplemented!("EmptyIdentifierNode::eval")
+        Ok(&())
     }
 }
 
@@ -138,7 +137,7 @@ pub struct IdentifierNode {
     pub position: Position,
 }
 
-impl<'a, V: Value> Node<'a, V> for IdentifierNode {
+impl<V: Value> Node<V> for IdentifierNode {
     type UnderlyingType = V;
 
     fn string(&self) -> String {
@@ -149,7 +148,7 @@ impl<'a, V: Value> Node<'a, V> for IdentifierNode {
         &self.position
     }
 
-    fn eval(&'a mut self, stack: &'a mut StackFrame<V>, _: bool) -> Result<&V, Err> {
+    fn eval<'a>(&'a mut self, stack: &'a mut StackFrame<V>, _: bool) -> Result<&V, Err> {
         if let Some(val) = stack.get(&self.value) {
             return Ok(val);
         }
@@ -175,7 +174,7 @@ pub struct UnaryExpressionNode<V: Value> {
     pub position: Position,
 }
 
-impl<'a, V: Value> Node<'a, V> for UnaryExpressionNode<V> {
+impl<V: Value> Node<V> for UnaryExpressionNode<V> {
     type UnderlyingType = V;
 
     fn string(&self) -> String {
@@ -190,105 +189,76 @@ impl<'a, V: Value> Node<'a, V> for UnaryExpressionNode<V> {
         &self.position
     }
 
-    fn eval(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&V, Err> {
+    fn eval(&mut self, _: &mut StackFrame<V>, _: bool) -> Result<&V, Err> {
         match self.operator {
             Kind::NegationOp => match self.operand.value_type() {
-                Type::Uint8 => {
-                    self.operand
-                        .as_any()
-                        .downcast_mut::<value::Uint8>()
-                        .expect("this type is u8")
-                        .mutate(|v| *v = !*v);
-                    Ok(&self.operand)
-                }
-                Type::Uint16 => {
-                    self.operand
-                        .as_any()
-                        .downcast_mut::<value::Uint8>()
-                        .expect("this type is u16")
-                        .mutate(|v| *v = !*v);
-                    Ok(&self.operand)
-                }
-
-                Type::Uint32 => {
-                    self.operand
-                        .as_any()
-                        .downcast_mut::<value::Uint8>()
-                        .expect("this type is u32")
-                        .mutate(|v| *v = !*v);
-                    Ok(&self.operand)
-                }
-
-                Type::Uint64 => {
-                    self.operand
-                        .as_any()
-                        .downcast_mut::<value::Uint8>()
-                        .expect("this type is u64")
-                        .mutate(|v| *v = !*v);
-                    Ok(&self.operand)
-                }
-
                 Type::Int8 => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Int8>()
-                        .expect("this type is i8")
-                        .mutate(|v| *v = -*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<i8>()
+                        .expect("this type is u8");
+
+                    let v = self
+                        .operand
+                        .as_any()
+                        .downcast_mut::<i8>()
+                        .expect("this type is u8");
+                    *v = -*v;
                 }
 
                 Type::Int16 => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Int16>()
-                        .expect("this type is i16")
-                        .mutate(|v| *v = -*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<i16>()
+                        .expect("this type is u8");
+                    *v = -*v;
                 }
 
                 Type::Int32 => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Int32>()
-                        .expect("this type is i32")
-                        .mutate(|v| *v = -*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<i32>()
+                        .expect("this type is i32");
+                    *v = -*v;
                 }
 
                 Type::Int64 => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Int64>()
-                        .expect("this type is i64")
-                        .mutate(|v| *v = -*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<i64>()
+                        .expect("this type is i64");
+                    *v = -*v;
                 }
 
                 Type::Float32 => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Float32>()
-                        .expect("this type is f32")
-                        .mutate(|v| *v = -*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<f32>()
+                        .expect("this type is f32");
+                    *v = -*v;
                 }
 
                 Type::Float64 => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Float64>()
-                        .expect("this type is f64")
-                        .mutate(|v| *v = -*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<f64>()
+                        .expect("this type is f64");
+                    *v = -*v;
                 }
 
                 Type::Bool => {
-                    self.operand
+                    let v = self
+                        .operand
                         .as_any()
-                        .downcast_mut::<value::Bool>()
-                        .expect("this type is bool")
-                        .mutate(|v| *v = !*v);
-                    Ok(&self.operand)
+                        .downcast_mut::<bool>()
+                        .expect("this type is bool");
+                    *v = !*v;
                 }
 
                 _ => {
@@ -314,6 +284,8 @@ impl<'a, V: Value> Node<'a, V> for UnaryExpressionNode<V> {
                 });
             }
         }
+
+        Ok(&self.operand)
     }
 }
 
@@ -324,10 +296,10 @@ pub struct BinaryExpressionNode<N: num_traits::Signed> {
     pub position: Position,
 }
 
-impl<'a, V: Value, N: num_traits::Signed + std::fmt::Display + Clone> Node<'a, V>
+impl<V: Value, N: num_traits::Signed + std::fmt::Display + Clone> Node<V>
     for BinaryExpressionNode<N>
 {
-    type UnderlyingType = OperandNode<N>;
+    type UnderlyingType = V;
 
     fn string(&self) -> String {
         format!(
@@ -350,11 +322,7 @@ impl<'a, V: Value, N: num_traits::Signed + std::fmt::Display + Clone> Node<'a, V
         &self.position
     }
 
-    fn eval(
-        &mut self,
-        _stack: &mut StackFrame<V>,
-        _allow_thunk: bool,
-    ) -> Result<&OperandNode<N>, Err> {
+    fn eval(&mut self, _stack: &mut StackFrame<V>, _allow_thunk: bool) -> Result<&V, Err> {
         if self.operator == Kind::AssignOp {
         } else if self.operator == Kind::AccessorOp {
         }
@@ -369,13 +337,14 @@ impl<'a, V: Value, N: num_traits::Signed + std::fmt::Display + Clone> Node<'a, V
     }
 }
 
-pub struct FunctionCallNode<T> {
+#[derive(Debug)]
+pub struct FunctionCallNode<T: Sized> {
     function: T,
-    arguments: [T],
+    arguments: Vec<T>,
 }
 
-impl<'a, V: Value, T: Node<'a, V>> Node<'a, V> for FunctionCallNode<T> {
-    type UnderlyingType = ();
+impl< V: Value, T: Node< V>> Node< V> for FunctionCallNode<T> {
+    type UnderlyingType = V;
 
     fn string(&self) -> String {
         self.arguments.iter().fold(
@@ -388,8 +357,8 @@ impl<'a, V: Value, T: Node<'a, V>> Node<'a, V> for FunctionCallNode<T> {
         &self.function.position()
     }
 
-    fn eval(&mut self, _stack: &mut StackFrame<V>, _allow_thunk: bool) -> Result<&(), Err> {
-        Ok(&())
+    fn eval(&mut self, _stack: &mut StackFrame<V>, _allow_thunk: bool) -> Result<&V, Err> {
+        todo!()
     }
 }
 
