@@ -3,54 +3,346 @@ use super::{
     eval::StackFrame,
     eval::{
         r#type::Type,
-        value::{self, Value},
+        value::{_Numeric, _Value},
     },
-    lexer::{number_type_to_enum, Kind, Position, Tok},
+    lexer::{Kind, Position, Tok},
 };
-use num_traits::{Num, Signed};
+use num_traits::Num;
 use std::{
-    any::Any,
-    borrow::BorrowMut,
+    fmt::Debug,
+    ops::{Sub, SubAssign},
     sync::mpsc::{Receiver, Sender},
 };
 
-/// Node represents an abstract syntax tree (AST) node in a Speak program.
-pub trait Node<V: Value> {
-    type UnderlyingType: Value;
-
-    fn string(&self) -> String;
-    fn position(&self) -> &Position;
-    fn eval<'a>(
-        &'a mut self,
-        stack: &'a mut StackFrame<V>,
-        allow_thunk: bool,
-    ) -> Result<&'a Self::UnderlyingType, Err>;
+#[derive(Debug, Clone, PartialEq)]
+pub enum Operand {
+    Value(_Value),
+    Identifier(String),
 }
 
-#[derive(Debug, Clone)]
-pub struct NumberLiteralNode<T: Value> {
-    pub value: T,
-    pub position: Position,
-}
-
-impl<T, V> Node<V> for NumberLiteralNode<T>
-where
-    V: Value,
-    T: Value,
-{
-    type UnderlyingType = T;
-
+impl Operand {
     fn string(&self) -> String {
-        self.value.string()
+        match self {
+            Operand::Value(v) => v.string(),
+            Operand::Identifier(s) => s.clone(),
+        }
+    }
+}
+
+/// Node represents an abstract syntax tree (AST) node in a Speak program.
+#[derive(Debug, Clone, PartialEq)]
+pub enum _Node {
+    NumberLiteral {
+        str_value: String,
+        number_type: Option<Type>,
+        position: Position,
+    },
+    StringLiteral {
+        value: String,
+        position: Position,
+    },
+    BoolLiteral {
+        value: bool,
+        position: Position,
+    },
+    EmptyIdentifier {
+        position: Position,
+    },
+    Identifier {
+        value: String,
+        position: Position,
+    },
+    UnaryExpression {
+        operator: Kind,
+        operand: Operand,
+        position: Position,
+    },
+    BinaryExpression {
+        operator: Kind,
+        leftOperand: Operand,
+        rightOperand: Operand,
+        position: Position,
+    },
+    FunctionCall {
+        function: Box<_Node>,
+        arguments: Vec<_Node>,
+        position: Position,
+    },
+    FunctionLiteral {
+        arguments: Vec<_Node>,
+        body: Box<_Node>,
+        position: Position,
+    },
+}
+
+impl _Node {
+    pub fn string(&self) -> String {
+        match self {
+            _Node::NumberLiteral { str_value, .. } => str_value.clone(),
+            _Node::StringLiteral { value, .. } => value.clone(),
+            _Node::BoolLiteral { value, .. } => value.to_string(),
+            _Node::EmptyIdentifier { .. } => "".to_string(),
+            _Node::Identifier { value, .. } => value.clone(),
+            _Node::UnaryExpression {
+                operator, operand, ..
+            } => format!("Unary {} ({})", operator.string(), operand.string()),
+            _Node::BinaryExpression {
+                operator,
+                leftOperand,
+                rightOperand,
+                ..
+            } => format!(
+                "Binary {} ({}, {})",
+                operator.string(),
+                leftOperand.string(),
+                rightOperand.string()
+            ),
+            _Node::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
+                let mut args = String::new();
+                for arg in arguments {
+                    args.push_str(&arg.string());
+                    args.push_str(", ");
+                }
+                format!("Call ({}) on ({})", function.string(), args)
+            }
+            _Node::FunctionLiteral {
+                arguments,
+                body,
+                position,
+            } => arguments
+                .iter()
+                .fold(format!("Function ({}):", position.string()), |acc, arg| {
+                    format!("{}, {}", acc, arg.string())
+                }),
+        }
     }
 
-    fn position(&self) -> &Position {
-        &self.position
+    pub fn position(&self) -> &Position {
+        match self {
+            _Node::NumberLiteral { position, .. } => position,
+            _Node::StringLiteral { position, .. } => position,
+            _Node::BoolLiteral { position, .. } => position,
+            _Node::EmptyIdentifier { position } => position,
+            _Node::Identifier { position, .. } => position,
+            _Node::UnaryExpression { position, .. } => position,
+            _Node::BinaryExpression { position, .. } => position,
+            _Node::FunctionCall { position, .. } => position,
+            _Node::FunctionLiteral { position, .. } => position,
+        }
     }
 
-    fn eval<'a>(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&'a T, Err> {
-        Ok(&self.value)
+    pub fn eval(&mut self, stack: &mut StackFrame, allow_thunk: bool) -> Result<_Value, Err> {
+        match self {
+            _Node::NumberLiteral {
+                str_value,
+                number_type,
+                ..
+            } => {
+                if let Some(t) = number_type {
+                    return match t {
+                        Type::Uint8 => {
+                            Ok(_Value::Numeric(_Numeric::Uint8(eval_number_literal::<u8>(
+                                &str_value,
+                            )?)))
+                        }
+                        Type::Uint16 => Ok(_Value::Numeric(_Numeric::Uint16(
+                            eval_number_literal::<u16>(&str_value)?,
+                        ))),
+                        Type::Uint32 => Ok(_Value::Numeric(_Numeric::Uint32(
+                            eval_number_literal::<u32>(&str_value)?,
+                        ))),
+                        Type::Uint64 => Ok(_Value::Numeric(_Numeric::Uint64(
+                            eval_number_literal::<u64>(&str_value)?,
+                        ))),
+                        Type::Int8 => Ok(_Value::Numeric(_Numeric::Int8(
+                            eval_number_literal::<i8>(&str_value)?,
+                        ))),
+                        Type::Int16 => {
+                            Ok(_Value::Numeric(_Numeric::Int16(
+                                eval_number_literal::<i16>(&str_value)?,
+                            )))
+                        }
+                        Type::Int32 => {
+                            Ok(_Value::Numeric(_Numeric::Int32(
+                                eval_number_literal::<i32>(&str_value)?,
+                            )))
+                        }
+                        Type::Int64 => {
+                            Ok(_Value::Numeric(_Numeric::Int64(
+                                eval_number_literal::<i64>(&str_value)?,
+                            )))
+                        }
+                        Type::Float32 => {
+                            Ok(_Value::Numeric(_Numeric::Float32(eval_number_literal::<
+                                f32,
+                            >(
+                                &str_value
+                            )?)))
+                        }
+                        Type::Float64 => {
+                            Ok(_Value::Numeric(_Numeric::Float64(eval_number_literal::<
+                                f64,
+                            >(
+                                &str_value
+                            )?)))
+                        }
+                        _ => {
+                            return Err(Err {
+                                message: "invalid number type".to_string(),
+                                reason: ErrorReason::System,
+                            })
+                        }
+                    };
+                }
+                Ok(_Value::Numeric(_Numeric::Float64(eval_number_literal::<
+                    f64,
+                >(
+                    str_value.as_str()
+                )?)))
+            }
+            _Node::StringLiteral { value, .. } => Ok(_Value::String(value.clone())), // Tidy: this is a copy
+            _Node::BoolLiteral { value, .. } => Ok(_Value::Bool(value.clone())), // Tidy: this is a copy
+            _Node::EmptyIdentifier { .. } => Ok(_Value::Empty),
+            _Node::Identifier { value, position } => {
+                if let Some(val) = stack.get(&value) {
+                    return Ok(val.clone());
+                }
+                Err(Err {
+                    message: format!("{} is not defined [{}]", value, position.string()),
+                    reason: ErrorReason::System,
+                })
+            }
+            _Node::UnaryExpression {
+                operator,
+                operand,
+                position,
+            } => {
+                let mut_operand = |op: &mut Operand| -> Result<(), Err> {
+                    match op {
+                        Operand::Value(v) => match v {
+                            _Value::Numeric(nt) => match nt {
+                                _Numeric::Int8(v) => {
+                                    *v = -*v;
+                                    Ok(())
+                                }
+                                _Numeric::Int16(v) => {
+                                    *v = -*v;
+                                    Ok(())
+                                }
+                                _Numeric::Int32(v) => {
+                                    *v = -*v;
+                                    Ok(())
+                                }
+                                _Numeric::Int64(v) => {
+                                    *v = -*v;
+                                    Ok(())
+                                }
+                                _Numeric::Float32(v) => {
+                                    *v = -*v;
+                                    Ok(())
+                                }
+                                _Numeric::Float64(v) => {
+                                    *v = -*v;
+                                    Ok(())
+                                }
+                                _ => Err(Err {
+                                    message: "invalid number type".to_string(),
+                                    reason: ErrorReason::System,
+                                }),
+                            },
+                            _Value::Bool(b) => {
+                                *b = !*b;
+                                Ok(())
+                            }
+                            _ => {
+                                return Err(Err {
+                                    message: format!(
+                                        "invalid unary operator {} at {}",
+                                        operator.string(),
+                                        position.string()
+                                    ),
+                                    reason: ErrorReason::Syntax,
+                                })
+                            }
+                        },
+
+                        _ => unimplemented!("should not evalute to a identifier"),
+                    }
+                };
+
+                match operator {
+                    Kind::NegationOp => match operand.clone() {
+                        Operand::Value(n) => {
+                            mut_operand(operand)?;
+                            Ok(n.clone())
+                        }
+                        Operand::Identifier(ident) => {
+                            if let Some(val) = stack.get(&ident) {
+                                mut_operand(operand)?;
+                                return Ok(val.clone());
+                            }
+                            return Err(Err {
+                                message: format!(
+                                    "{} is not defined [{}]",
+                                    ident,
+                                    position.string()
+                                ),
+                                reason: ErrorReason::System,
+                            });
+                        }
+                    },
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "invalid unary operator {} at {}",
+                                operator.string(),
+                                position.string()
+                            ),
+                            reason: ErrorReason::Syntax,
+                        });
+                    }
+                }
+            }
+            _Node::BinaryExpression {
+                operator,
+                leftOperand,
+                rightOperand,
+                position,
+            } => unimplemented!(),
+            _Node::FunctionCall {
+                function,
+                arguments,
+                position,
+            } => {
+                let mut arg_results = Vec::new();
+                for arg in arguments {
+                    arg_results.push(arg.eval(stack, false)?);
+                }
+
+                //unimplemented!()
+                eval_speak_function(&function.eval(stack, false)?, allow_thunk, &arg_results)
+            }
+            _Node::FunctionLiteral {
+                arguments,
+                body,
+                position,
+            } => unimplemented!(),
+        }
     }
+}
+
+// Calls into a Speak callback function synchronously.
+fn eval_speak_function<'a>(
+    fn_value: &_Value,
+    allow_thunk: bool,
+    args: &[_Value],
+) -> Result<_Value, Err> {
+    unimplemented!() // TODO: implement
 }
 
 /// the number evaluation requires inferring the type of the number thus a more generic
@@ -69,297 +361,6 @@ pub fn eval_number_literal<T: num_traits::Num>(value: &str) -> Result<T, Err> {
 fn this_test() {
     let res = eval_number_literal::<f32>("0.234");
     assert!(Ok(0.234f32) == res);
-}
-
-pub struct StringLiteralNode {
-    pub value: String,
-    pub position: Position,
-}
-
-impl<V: Value> Node<V> for StringLiteralNode {
-    type UnderlyingType = String;
-
-    fn string(&self) -> String {
-        self.value.clone()
-    }
-
-    fn position(&self) -> &Position {
-        &self.position
-    }
-
-    fn eval<'a>(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&'a String, Err> {
-        Ok(&self.value)
-    }
-}
-
-pub struct BoolLiteralNode {
-    pub value: bool,
-    pub position: Position,
-}
-
-impl<V: Value> Node<V> for BoolLiteralNode {
-    type UnderlyingType = bool;
-
-    fn string(&self) -> String {
-        self.value.to_string()
-    }
-
-    fn position(&self) -> &Position {
-        &self.position
-    }
-
-    fn eval<'a>(&'a mut self, _: &mut StackFrame<V>, _: bool) -> Result<&'a bool, Err> {
-        Ok(&self.value)
-    }
-}
-
-pub struct EmptyIdentifierNode {
-    pub position: Position,
-}
-impl<V: Value> Node<V> for EmptyIdentifierNode {
-    type UnderlyingType = ();
-
-    fn string(&self) -> String {
-        "empty identifier".to_string()
-    }
-
-    fn position(&self) -> &Position {
-        &self.position
-    }
-
-    fn eval(&mut self, _: &mut StackFrame<V>, _: bool) -> Result<&(), Err> {
-        Ok(&())
-    }
-}
-
-pub struct IdentifierNode {
-    pub value: String,
-    pub position: Position,
-}
-
-impl<V: Value> Node<V> for IdentifierNode {
-    type UnderlyingType = V;
-
-    fn string(&self) -> String {
-        self.value.clone()
-    }
-
-    fn position(&self) -> &Position {
-        &self.position
-    }
-
-    fn eval<'a>(&'a mut self, stack: &'a mut StackFrame<V>, _: bool) -> Result<&V, Err> {
-        if let Some(val) = stack.get(&self.value) {
-            return Ok(val);
-        }
-
-        Err(Err {
-            message: format!("{} is not defined [{}]", self.value, self.position.string()),
-            reason: ErrorReason::System,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum OperandNode<N: Signed> {
-    NumberValue(N),
-    BoolValue(bool),
-    Identifier(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct UnaryExpressionNode<V: Value> {
-    pub operator: Kind,
-    pub operand: V,
-    pub position: Position,
-}
-
-impl<V: Value> Node<V> for UnaryExpressionNode<V> {
-    type UnderlyingType = V;
-
-    fn string(&self) -> String {
-        format!(
-            "Unary {} ({})",
-            self.operator.string(),
-            self.operand.string()
-        )
-    }
-
-    fn position(&self) -> &Position {
-        &self.position
-    }
-
-    fn eval(&mut self, _: &mut StackFrame<V>, _: bool) -> Result<&V, Err> {
-        match self.operator {
-            Kind::NegationOp => match self.operand.value_type() {
-                Type::Int8 => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<i8>()
-                        .expect("this type is u8");
-
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<i8>()
-                        .expect("this type is u8");
-                    *v = -*v;
-                }
-
-                Type::Int16 => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<i16>()
-                        .expect("this type is u8");
-                    *v = -*v;
-                }
-
-                Type::Int32 => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<i32>()
-                        .expect("this type is i32");
-                    *v = -*v;
-                }
-
-                Type::Int64 => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<i64>()
-                        .expect("this type is i64");
-                    *v = -*v;
-                }
-
-                Type::Float32 => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<f32>()
-                        .expect("this type is f32");
-                    *v = -*v;
-                }
-
-                Type::Float64 => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<f64>()
-                        .expect("this type is f64");
-                    *v = -*v;
-                }
-
-                Type::Bool => {
-                    let v = self
-                        .operand
-                        .as_any()
-                        .downcast_mut::<bool>()
-                        .expect("this type is bool");
-                    *v = !*v;
-                }
-
-                _ => {
-                    return Err(Err {
-                        message: format!(
-                            "{} is not a boolean or a number type [{}]",
-                            self.operand.string(),
-                            self.position.string()
-                        ),
-                        reason: ErrorReason::System,
-                    })
-                }
-            },
-
-            _ => {
-                return Err(Err {
-                    message: format!(
-                        "invalid unary operator {} at {}",
-                        self.operator.string(),
-                        self.position.string()
-                    ),
-                    reason: ErrorReason::Syntax,
-                });
-            }
-        }
-
-        Ok(&self.operand)
-    }
-}
-
-pub struct BinaryExpressionNode<N: num_traits::Signed> {
-    pub operator: Kind,
-    pub leftOperand: OperandNode<N>,
-    pub rightOperand: OperandNode<N>,
-    pub position: Position,
-}
-
-impl<V: Value, N: num_traits::Signed + std::fmt::Display + Clone> Node<V>
-    for BinaryExpressionNode<N>
-{
-    type UnderlyingType = V;
-
-    fn string(&self) -> String {
-        format!(
-            "Binary ({}) {} ({})",
-            match self.leftOperand {
-                OperandNode::NumberValue(ref v) => v.to_string(),
-                OperandNode::BoolValue(ref v) => v.to_string(),
-                OperandNode::Identifier(ref v) => v.clone(),
-            },
-            self.operator.string(),
-            match self.rightOperand {
-                OperandNode::NumberValue(ref v) => v.to_string(),
-                OperandNode::BoolValue(ref v) => v.to_string(),
-                OperandNode::Identifier(ref v) => v.clone(),
-            }
-        )
-    }
-
-    fn position(&self) -> &Position {
-        &self.position
-    }
-
-    fn eval(&mut self, _stack: &mut StackFrame<V>, _allow_thunk: bool) -> Result<&V, Err> {
-        if self.operator == Kind::AssignOp {
-        } else if self.operator == Kind::AccessorOp {
-        }
-
-        match self.operator {
-            Kind::AssignOp => {}
-            Kind::AccessorOp => {}
-            _ => {}
-        }
-
-        unimplemented!()
-    }
-}
-
-#[derive(Debug)]
-pub struct FunctionCallNode<T: Sized> {
-    function: T,
-    arguments: Vec<T>,
-}
-
-impl< V: Value, T: Node< V>> Node< V> for FunctionCallNode<T> {
-    type UnderlyingType = V;
-
-    fn string(&self) -> String {
-        self.arguments.iter().fold(
-            format!("Call ({}) on (", self.function.string()),
-            |acc, arg| format!("{}, {}", acc, arg.string()),
-        )
-    }
-
-    fn position(&self) -> &Position {
-        &self.function.position()
-    }
-
-    fn eval(&mut self, _stack: &mut StackFrame<V>, _allow_thunk: bool) -> Result<&V, Err> {
-        todo!()
-    }
 }
 
 pub fn parse<V, N, T>(
