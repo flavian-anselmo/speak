@@ -763,14 +763,14 @@ mod test {
 
     #[test]
     fn test_speak_files() {
-        let cwd = env::current_dir().expect("this should not fail");
+        let cwd = env::current_dir().expect("there must be a wd");
         let (tx, rx) = channel::<Tok>();
         let mut buf_reader: BufReader<&[u8]>;
 
         // hello_world.spk
         {
             let data = fs::read(cwd.clone().join("samples/hello_world.spk"))
-                .expect("this should not fail");
+                .expect("will resolve to the hello_world.spk file");
             buf_reader = BufReader::new(&data);
 
             if let Err(err) = tokenize(&mut buf_reader, &tx, true, true) {
@@ -778,7 +778,7 @@ mod test {
             }
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("mod".to_string()),
@@ -788,7 +788,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::StringLiteral,
                     str: Some("fmt".to_string()),
@@ -797,11 +797,124 @@ mod test {
                 }
             );
 
-            // assert_eq!(
-            //     rx.try_recv()
-            // )
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("main".to_string()),
+                    num: None,
+                    position: Position { line: 5, column: 1 }
+                }
+            );
 
-            println!("Done")
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Colon,
+                    str: None,
+                    num: None,
+                    position: Position { line: 5, column: 5 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::TypeName(Type::Empty),
+                    str: None,
+                    num: None,
+                    position: Position { line: 5, column: 7 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::FunctionArrow,
+                    str: None,
+                    num: None,
+                    position: Position {
+                        line: 5,
+                        column: 10
+                    }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::TypeName(Type::Empty),
+                    str: None,
+                    num: None,
+                    position: Position {
+                        line: 5,
+                        column: 13
+                    }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Identation,
+                    str: None,
+                    num: None,
+                    position: Position { line: 6, column: 1 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Identation,
+                    str: None,
+                    num: None,
+                    position: Position { line: 7, column: 1 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Return,
+                    str: None,
+                    num: None,
+                    position: Position { line: 7, column: 4 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("fmt".to_string()),
+                    num: None,
+                    position: Position { line: 7, column: 6 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::ModuleAccessor,
+                    str: None,
+                    num: None,
+                    position: Position { line: 7, column: 9 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan will not fail"),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("println".to_string()),
+                    num: None,
+                    position: Position {
+                        line: 7,
+                        column: 11
+                    }
+                }
+            );
         }
     }
 }
