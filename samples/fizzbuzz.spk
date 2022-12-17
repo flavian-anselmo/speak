@@ -2,11 +2,11 @@
 mod "fmt"
 
 fizzbuzz: n int -> string
-    where
-        n % 15 == 0 = "FizzBuzz"
-        n % 3 == 0 = "Fizz"
-        n % 5 == 0 = "Buzz"
-        _ = fmt::sprint n
+    where:
+        n % 15 == 0 ? = "FizzBuzz"
+        n % 3 == 0 ? = "Fizz"
+        n % 5 == 0 ? = "Buzz"
+        _ ? = fmt::sprint n
 
 main: () -> ()
     // call with 100

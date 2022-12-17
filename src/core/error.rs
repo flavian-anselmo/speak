@@ -29,12 +29,6 @@ pub struct Err {
     pub message: String,
 }
 
-impl Err {
-    pub fn error(&self) -> String {
-        self.message.clone()
-    }
-}
-
 impl From<std::io::Error> for Err {
     fn from(err: std::io::Error) -> Self {
         Err {

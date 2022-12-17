@@ -3,14 +3,16 @@ use super::{
     eval::StackFrame,
     eval::{
         r#type::Type,
-        value::{_Numeric, _Value},
+        value::{Function, _Numeric, _Value},
     },
     lexer::{Kind, Position, Tok},
 };
 use num_traits::Num;
 use std::{
+    cell::RefCell,
     fmt::Debug,
     ops::{Sub, SubAssign},
+    rc::Rc,
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -324,14 +326,15 @@ impl _Node {
                     arg_results.push(arg.eval(stack, false)?);
                 }
 
-                //unimplemented!()
                 eval_speak_function(&function.eval(stack, false)?, allow_thunk, &arg_results)
             }
             _Node::FunctionLiteral {
                 arguments,
                 body,
                 position,
-            } => unimplemented!(),
+            } => Ok(_Value::Function(Function {
+                defn: Box::new(self.clone()),
+            })),
         }
     }
 }
@@ -363,8 +366,8 @@ fn this_test() {
     assert!(Ok(0.234f32) == res);
 }
 
-pub fn parse<V, N, T>(
-    tokens_chan: Receiver<Tok<T>>,
+pub fn parse<N>(
+    tokens_chan: Receiver<Tok>,
     nodes_chan: Sender<N>,
     fatal_error: bool,
     debug_parser: bool,

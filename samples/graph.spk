@@ -18,7 +18,8 @@ draw: x int, fn (int -> float64), symbol string -> ()
 
 // recursively draw from a single value
 drawRec: max int -> ()
-    if max == 0 ? = 0
+    if max == 0
+        ? = 0
         !   draw max math::sin "+"
 		    draw max (x int -> float64 = (math::cos x) + 0.7) "o"
             = drawRec max - 1

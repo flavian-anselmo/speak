@@ -3,10 +3,10 @@ mod "fmt"
 
 // naive implementation
 fib: n int64 -> int64
-    where
-        n == 0 = 0
-        n == 1 = 1
-        _ = (fib n - 1) + (fib n - 2)
+    where n:
+        0 ? = 0
+        1 ? = 1
+        _ ? = (fib n - 1) + (fib n - 2)
 
 // memoized implementation
 fibMemo: n int64 -> int64

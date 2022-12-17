@@ -1,6 +1,6 @@
 use super::{
     error::{Err, ErrorReason},
-    eval::r#type::Type,
+    eval::{r#type::Type, value::_Numeric},
     log::log_debug,
 };
 use num_traits::Num;
@@ -22,6 +22,12 @@ pub enum Kind {
     // Expr,
     Identifier,
     EmptyIdentifier,
+    Identation, // $ single tab character
+
+    IfClause,
+    IfExpr,
+    WhereClause,
+    WhereExpr,
 
     TrueLiteral,
     FalseLiteral,
@@ -43,6 +49,8 @@ pub enum Kind {
     LessThanOp,
     EqualOp,
 
+    Return,
+
     TypeName(Type),
     Comma,
     Colon,
@@ -50,6 +58,7 @@ pub enum Kind {
     Bang,
     QuestionMark,
 
+    ModuleAccessor,
     FunctionArrow,
 
     LeftParen,
@@ -64,6 +73,12 @@ impl Kind {
             // Kind::Expr => "expression".to_string(),
             Kind::Identifier => "identifier".to_string(),
             Kind::EmptyIdentifier => "'_'".to_string(),
+            Kind::Identation => "identation".to_string(),
+
+            Kind::IfClause => "if clause".to_string(),
+            Kind::IfExpr => "if expression".to_string(),
+            Kind::WhereClause => "where clause".to_string(),
+            Kind::WhereExpr => "where expression".to_string(),
 
             Kind::TrueLiteral => "true literal".to_string(),
             Kind::FalseLiteral => "false literal".to_string(),
@@ -78,7 +93,7 @@ impl Kind {
             Kind::QuestionMark => "'?'".to_string(),
 
             Kind::NegationOp => "'~'".to_string(),
-            Kind::AssignOp => "':='".to_string(),
+            Kind::AssignOp => "is".to_string(),
             Kind::AccessorOp => "'.'".to_string(),
             Kind::AddOp => "'+'".to_string(),
             Kind::SubtractOp => "'-'".to_string(),
@@ -90,9 +105,12 @@ impl Kind {
             Kind::LogicalXOrOp => "'^'".to_string(),
             Kind::GreaterThanOp => "'>'".to_string(),
             Kind::LessThanOp => "'<'".to_string(),
-            Kind::EqualOp => "'='".to_string(),
+            Kind::EqualOp => "'=='".to_string(),
+
+            Kind::Return => "'='".to_string(),
 
             Kind::FunctionArrow => "->".to_string(),
+            Kind::ModuleAccessor => "::".to_string(),
 
             Kind::LeftParen => "'('".to_string(),
             Kind::RightParen => "')'".to_string(),
@@ -121,14 +139,14 @@ impl Position {
 // Tok is the monomorphic struct representing all Speak program tokens
 // in the lexer.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Tok<T> {
+pub struct Tok {
     kind: Kind,
     str: Option<String>,
-    num: Option<T>,
+    num: Option<_Numeric>,
     position: Position,
 }
 
-impl<T> Tok<T> {
+impl Tok {
     fn string(&self) -> String {
         match self.kind {
             Kind::Identifier | Kind::StringLiteral | Kind::NumberLiteral => {
@@ -147,19 +165,13 @@ impl<T> Tok<T> {
 
 // tokenize takes an io.Reader and transforms it into a stream of Tok (tokens).
 // assumption: the inputs are valid UTF-8 strings.
-pub fn tokenize<T>(
+pub fn tokenize(
     unbuffered: &mut BufReader<&[u8]>,
-    tokens_chan: &Sender<Tok<T>>,
+    tokens_chan: &Sender<Tok>,
     _fatal_err: bool,
     debug_lexer: bool,
 ) -> Result<(), Err> {
-    // read a complete line while parsing
-    let mut buf = String::new();
-    let mut entry = String::new();
-    let mut last_line_column = (0, 0);
-    let mut comment = false;
-
-    // helper cal_col fn
+    // helper calculate column fn
     let col_fn = |col, len| {
         if len == 1 {
             return col;
@@ -167,38 +179,77 @@ pub fn tokenize<T>(
         return col - (len - 1);
     };
 
+    // read a complete line while parsing
     let mut line = 1;
-    'NEXT_LINE_PARSER: for _ in unbuffered.read_line(&mut buf) {
+    for _line in unbuffered.lines() {
+        if _line.is_err() {
+            break;
+        }
+        let buf = _line.unwrap();
+
         // skip line comments
-        if buf.starts_with("//") {
-            buf.clear();
+        if buf.starts_with("//") || buf.is_empty() {
             line += 1;
             continue;
         }
 
+        // if starts with an identation, log the identation to the token stream
         let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
-        while let Some((column, c)) = buf_iter.next() {
-            // skip if char is newline
-            if c == 0xA as char {
-                line += 1;
-                buf.clear();
-                continue 'NEXT_LINE_PARSER;
+        let mut count = 0;
+        loop {
+            // identation is 3 spaces
+            if let Some((i, c)) = buf_iter.peek() {
+                if *c == ' ' {
+                    if count == 2 {
+                        commit(
+                            Tok {
+                                kind: Kind::Identation,
+                                str: None,
+                                num: None,
+                                position: Position {
+                                    line,
+                                    column: col_fn(*i + 1, 3),
+                                },
+                            },
+                            tokens_chan,
+                            &debug_lexer,
+                        )?;
+                        // reset the count
+                        count = 0;
+                    }
+
+                    count += 1;
+                    buf_iter.next(); //advance iterator to net item.
+                    continue;
+                }
+                break;
             }
+        }
+
+        //   let mut comment = false;
+        let mut entry = String::new();
+        let mut last_line_column = (0, 0);
+        while let Some((column, c)) = buf_iter.next() {
+            let token_commit = |kind| {
+                commit(
+                    Tok {
+                        kind,
+                        str: None,
+                        num: None,
+                        position: Position {
+                            line,
+                            column: column + 1,
+                        },
+                    },
+                    tokens_chan,
+                    &debug_lexer,
+                )
+            };
 
             match c {
                 '/' => {
-                    if comment {
-                        comment = false;
-                        line += 1;
-                        buf.clear();
-                        continue 'NEXT_LINE_PARSER;
-                    }
-
                     if let Some((_, '/')) = buf_iter.next() {
-                        comment = false;
-                        line += 1;
-                        buf.clear();
-                        continue 'NEXT_LINE_PARSER;
+                        break;
                     }
 
                     return Err(Err {
@@ -207,7 +258,7 @@ pub fn tokenize<T>(
                     });
                 }
                 ' ' => {
-                    // if there is previous entry, commit it as identifier
+                    // if there is previous entry, commit it as arbitrary
                     if entry.len() > 0 {
                         commit_arbitrary(
                             entry.clone(),
@@ -233,13 +284,14 @@ pub fn tokenize<T>(
                                             num: None,
                                             position: Position {
                                                 line,
-                                                column: column + 1,
+                                                column: col_fn(column, entry.len()),
                                             },
                                         },
                                         tokens_chan,
                                         &debug_lexer,
                                     )?;
-                                    continue;
+                                    entry.clear();
+                                    break;
                                 }
                                 _ => {
                                     entry.push(c);
@@ -269,35 +321,18 @@ pub fn tokenize<T>(
                         entry.clear();
                     }
 
-                    commit(
-                        Tok {
-                            kind: Kind::Colon,
-                            str: None,
-                            num: None,
-                            position: Position {
-                                line,
-                                column: column + 1,
-                            },
-                        },
-                        tokens_chan,
-                        &debug_lexer,
-                    )?;
+                    // lookahead for another ':', mkaing up ::; module accessor
+                    if let Some((_, c)) = buf_iter.peek() {
+                        if *c == ':' {
+                            token_commit(Kind::ModuleAccessor)?;
+                            buf_iter.next();
+                            continue;
+                        }
+                    }
+                    token_commit(Kind::Colon)?;
                 }
                 '_' => {
-                    commit(
-                        Tok {
-                            kind: Kind::EmptyIdentifier,
-                            str: None,
-                            num: None,
-                            position: Position {
-                                line,
-                                column: column + 1,
-                            },
-                        },
-                        tokens_chan,
-                        &debug_lexer,
-                    )?;
-                    entry.clear();
+                    token_commit(Kind::EmptyIdentifier)?;
                 }
                 ',' => {
                     // if there is previous entry, commit it as identifier
@@ -312,58 +347,23 @@ pub fn tokenize<T>(
                         entry.clear();
                     }
 
-                    commit(
-                        Tok {
-                            kind: Kind::Comma,
-                            str: None,
-                            num: None,
-                            position: Position {
-                                line,
-                                column: column + 1,
-                            },
-                        },
-                        tokens_chan,
-                        &debug_lexer,
-                    )?;
+                    token_commit(Kind::Comma)?;
                 }
                 '!' => {
-                    commit(
-                        Tok {
-                            kind: Kind::Bang,
-                            str: None,
-                            num: None,
-                            position: Position {
-                                line,
-                                column: column + 1,
-                            },
-                        },
-                        &tokens_chan,
-                        &debug_lexer,
-                    )?;
-                    entry.clear();
+                    token_commit(Kind::Bang)?;
                 }
                 '?' => {
-                    commit(
-                        Tok {
-                            kind: Kind::QuestionMark,
-                            str: None,
-                            num: None,
-                            position: Position {
-                                line,
-                                column: column + 1,
-                            },
-                        },
-                        &tokens_chan,
-                        &debug_lexer,
-                    )?;
-                    entry.clear();
+                    token_commit(Kind::QuestionMark)?;
                 }
-                '{' => {
-                    // start of function expression
+                '=' => {
+                    token_commit(Kind::Return)?;
                 }
-                '(' => {
-                    // start of expression
-                }
+                // '{' => {
+                //     // start of function expression
+                // }
+                // '(' => {
+                //     // start of expression
+                // }
                 _ => {
                     entry.push(c);
                     last_line_column.0 = line;
@@ -371,24 +371,25 @@ pub fn tokenize<T>(
                 }
             }
         }
-        buf.clear();
-        line += 1;
-    }
 
-    if entry.len() > 0 {
-        commit_arbitrary(
-            entry.clone(),
-            tokens_chan,
-            &debug_lexer,
-            last_line_column.0,
-            col_fn(last_line_column.1, entry.len()),
-        )?;
+        // commit last entry if present
+        if entry.len() > 0 {
+            commit_arbitrary(
+                entry.clone(),
+                tokens_chan,
+                &debug_lexer,
+                last_line_column.0,
+                col_fn(last_line_column.1, entry.len()),
+            )?;
+        }
+
+        line += 1;
     }
 
     Ok(())
 }
 
-fn commit<T>(tok: Tok<T>, tokens_chan: &Sender<Tok<T>>, debug_lexer: &bool) -> Result<(), Err> {
+fn commit(tok: Tok, tokens_chan: &Sender<Tok>, debug_lexer: &bool) -> Result<(), Err> {
     if *debug_lexer {
         log_debug(&format!("lexer -> {}", tok.string()));
     }
@@ -396,9 +397,9 @@ fn commit<T>(tok: Tok<T>, tokens_chan: &Sender<Tok<T>>, debug_lexer: &bool) -> R
     Ok(())
 }
 
-fn commit_arbitrary<T>(
+fn commit_arbitrary(
     entry: String,
-    tokens_chan: &Sender<Tok<T>>,
+    tokens_chan: &Sender<Tok>,
     debug_lexer: &bool,
     line: usize,
     column: usize,
@@ -428,40 +429,16 @@ fn commit_arbitrary<T>(
         }
 
         "bool" => type_token(Kind::TypeName(Type::Bool)),
+
         "string" => type_token(Kind::TypeName(Type::String)),
 
         "->" => type_token(Kind::FunctionArrow),
 
-        "true" => commit(
-            Tok {
-                kind: Kind::TrueLiteral,
-                str: None,
-                num: None,
-                position: Position { line, column },
-            },
-            tokens_chan,
-            debug_lexer,
-        ),
-        "false" => commit(
-            Tok {
-                kind: Kind::FalseLiteral,
-                str: None,
-                num: None,
-                position: Position { line, column },
-            },
-            tokens_chan,
-            debug_lexer,
-        ),
-        "()" => commit(
-            Tok {
-                kind: Kind::TypeName(Type::Empty),
-                str: None,
-                num: None,
-                position: Position { line, column },
-            },
-            tokens_chan,
-            debug_lexer,
-        ),
+        "true" => type_token(Kind::TrueLiteral),
+
+        "false" => type_token(Kind::FalseLiteral),
+
+        "()" => type_token(Kind::TypeName(Type::Empty)),
 
         _ => {
             // check if entry string is numerical
@@ -520,11 +497,72 @@ pub fn number_type_to_enum(name: &str) -> Type {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::mpsc::{channel, TryRecvError};
+    use std::{
+        env,
+        fs::{self},
+        sync::mpsc::{channel, TryRecvError},
+    };
+    #[test]
+    fn test_commit_arbitrary() {
+        let (tx, rx) = channel::<Tok>();
+
+        commit_arbitrary("uint8".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok {
+                kind: Kind::TypeName(Type::Uint8),
+                str: None,
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        commit_arbitrary("->".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok {
+                kind: Kind::FunctionArrow,
+                str: None,
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        commit_arbitrary("123.23".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: Some("123.23".to_string()),
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        // test random identifier
+        commit_arbitrary("_abc".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Tok {
+                kind: Kind::Identifier,
+                str: Some("_abc".to_string()),
+                num: None,
+                position: Position { line: 1, column: 1 }
+            }
+        );
+
+        assert_eq!(
+            commit_arbitrary("123abc".to_string(), &tx, &false, 1, 1).unwrap_err(),
+            Err {
+                reason: ErrorReason::Syntax,
+                message: "invalid identifier: 123abc".to_string()
+            }
+        );
+    }
 
     #[test]
     fn test_tokenize() {
-        let (tx, rx) = channel::<Tok<()>>();
+        let (tx, rx) = channel::<Tok>();
         let mut buf_reader: BufReader<&[u8]>;
 
         // comments are ignored
@@ -539,11 +577,24 @@ mod test {
                 TryRecvError::Empty
             );
 
-            buf_reader = BufReader::new("    // this is a spaced comment".as_bytes());
+            buf_reader = BufReader::new(
+                "   // this is a spaced comment with an identation of 3 space char".as_bytes(),
+            );
             match tokenize(&mut buf_reader, &tx, true, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
             }
+
+            assert_eq!(
+                rx.try_recv()
+                    .expect("recv chan must be an identation token"),
+                Tok {
+                    kind: Kind::Identation,
+                    str: None,
+                    num: None,
+                    position: Position { line: 1, column: 1 },
+                },
+            );
             assert_eq!(
                 rx.try_recv().expect_err("recv chan must fail"),
                 TryRecvError::Empty
@@ -583,6 +634,34 @@ mod test {
             );
         }
 
+        // tokenise an identifier and a string literal
+        {
+            buf_reader = BufReader::new("// This is module declaration.\nmod \"fmt\"".as_bytes());
+            if let Err(err) = tokenize(&mut buf_reader, &tx, true, true) {
+                panic!("error: {}", err.message);
+            }
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan does not fail"),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("mod".to_string()),
+                    num: None,
+                    position: Position { line: 2, column: 1 }
+                }
+            );
+
+            assert_eq!(
+                rx.try_recv().expect("recv chan does not fail"),
+                Tok {
+                    kind: Kind::StringLiteral,
+                    str: Some("fmt".to_string()),
+                    num: None,
+                    position: Position { line: 2, column: 6 }
+                }
+            );
+        }
+
         // tokenize a function signature
         {
             buf_reader = BufReader::new("sum: a, b int -> int".as_bytes());
@@ -602,7 +681,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::Colon,
                     str: None,
@@ -612,7 +691,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("a".to_string()),
@@ -622,7 +701,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::Comma,
                     str: None,
@@ -632,7 +711,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("b".to_string()),
@@ -642,7 +721,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::TypeName(Type::Int32),
                     str: None,
@@ -655,7 +734,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::FunctionArrow,
                     str: None,
@@ -668,7 +747,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().unwrap(),
+                rx.try_recv().expect("recv chan does not fail"),
                 Tok {
                     kind: Kind::TypeName(Type::Int32),
                     str: None,
@@ -683,60 +762,46 @@ mod test {
     }
 
     #[test]
-    fn test_commit_arbitrary() {
-        let (tx, rx) = channel::<Tok<()>>();
+    fn test_speak_files() {
+        let cwd = env::current_dir().expect("this should not fail");
+        let (tx, rx) = channel::<Tok>();
+        let mut buf_reader: BufReader<&[u8]>;
 
-        commit_arbitrary("uint8".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
-        assert_eq!(
-            rx.recv().unwrap(),
-            Tok::<()> {
-                kind: Kind::TypeName(Type::Uint8),
-                str: None,
-                num: None,
-                position: Position { line: 1, column: 1 }
-            }
-        );
+        // hello_world.spk
+        {
+            let data = fs::read(cwd.clone().join("samples/hello_world.spk"))
+                .expect("this should not fail");
+            buf_reader = BufReader::new(&data);
 
-        commit_arbitrary("->".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
-        assert_eq!(
-            rx.recv().unwrap(),
-            Tok::<()> {
-                kind: Kind::FunctionArrow,
-                str: None,
-                num: None,
-                position: Position { line: 1, column: 1 }
+            if let Err(err) = tokenize(&mut buf_reader, &tx, true, true) {
+                panic!("error: {}", err.message);
             }
-        );
 
-        commit_arbitrary("123.23".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
-        assert_eq!(
-            rx.recv().unwrap(),
-            Tok::<()> {
-                kind: Kind::NumberLiteral,
-                str: Some("123.23".to_string()),
-                num: None,
-                position: Position { line: 1, column: 1 }
-            }
-        );
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("mod".to_string()),
+                    num: None,
+                    position: Position { line: 2, column: 1 }
+                }
+            );
 
-        // test random identifier
-        commit_arbitrary("_abc".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
-        assert_eq!(
-            rx.recv().unwrap(),
-            Tok::<()> {
-                kind: Kind::Identifier,
-                str: Some("_abc".to_string()),
-                num: None,
-                position: Position { line: 1, column: 1 }
-            }
-        );
+            assert_eq!(
+                rx.try_recv().unwrap(),
+                Tok {
+                    kind: Kind::StringLiteral,
+                    str: Some("fmt".to_string()),
+                    num: None,
+                    position: Position { line: 2, column: 6 }
+                }
+            );
 
-        assert_eq!(
-            commit_arbitrary("123abc".to_string(), &tx, &false, 1, 1).unwrap_err(),
-            Err {
-                reason: ErrorReason::Syntax,
-                message: "invalid identifier: 123abc".to_string()
-            }
-        );
+            // assert_eq!(
+            //     rx.try_recv()
+            // )
+
+            println!("Done")
+        }
     }
 }

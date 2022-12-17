@@ -90,8 +90,11 @@ pub mod value {
         lexer::number_type_to_enum,
         parser::_Node,
     };
-    use std::any::Any;
-    use std::fmt::{Debug, Display};
+    use std::{any::Any, cell::RefCell};
+    use std::{
+        fmt::{Debug, Display},
+        rc::Rc,
+    };
 
     use super::{r#type::Type, StackFrame, VTable, MAX_PRINT_LEN};
     use num_traits::{cast, FromPrimitive, Num, NumCast, Signed, ToPrimitive};
@@ -132,9 +135,9 @@ pub mod value {
 
     #[derive(Debug, PartialEq, Clone)]
     pub struct Function {
-        // It's defn must be of variant `FunctionLiteral`.
+        // defn must be of variant `FunctionLiteral`.
         pub defn: Box<_Node>,
-        pub parent_frame: StackFrame,
+        // pub parent_frame: Rc<RefCell<StackFrame>>, TODO: implement this
     }
 
     impl Function {
