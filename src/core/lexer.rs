@@ -1,9 +1,8 @@
 use super::{
     error::{Err, ErrorReason},
-    eval::{r#type::Type, value::_Numeric},
+    eval::r#type::Type,
     log::log_debug,
 };
-use num_traits::Num;
 use regex::Regex;
 use std::{
     io::{BufRead, BufReader},
@@ -44,7 +43,6 @@ pub enum Kind {
     ModulusOp,
     LogicalAndOp,
     LogicalOrOp,
-    LogicalXOrOp,
     GreaterThanOp,
     LessThanOp,
     EqualOp,
@@ -52,7 +50,7 @@ pub enum Kind {
     Return,
 
     TypeName(Type),
-    Comma,
+    Separator,
     Colon,
 
     Bang,
@@ -86,7 +84,7 @@ impl Kind {
             Kind::StringLiteral => "string literal".to_string(),
 
             Kind::TypeName(t) => t.string(),
-            Kind::Comma => "','".to_string(),
+            Kind::Separator => "','".to_string(),
             Kind::Colon => "':'".to_string(),
 
             Kind::Bang => "'!'".to_string(),
@@ -102,7 +100,6 @@ impl Kind {
             Kind::ModulusOp => "'%'".to_string(),
             Kind::LogicalAndOp => "'&'".to_string(),
             Kind::LogicalOrOp => "'|'".to_string(),
-            Kind::LogicalXOrOp => "'^'".to_string(),
             Kind::GreaterThanOp => "'>'".to_string(),
             Kind::LessThanOp => "'<'".to_string(),
             Kind::EqualOp => "'=='".to_string(),
@@ -140,10 +137,10 @@ impl Position {
 // in the lexer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tok {
-    kind: Kind,
-    str: Option<String>,
-    num: Option<_Numeric>,
-    position: Position,
+    pub kind: Kind,
+    pub str: Option<String>,
+    pub num: Option<f64>,
+    pub position: Position,
 }
 
 impl Tok {
@@ -247,16 +244,6 @@ pub fn tokenize(
             };
 
             match c {
-                '/' => {
-                    if let Some((_, '/')) = buf_iter.next() {
-                        break;
-                    }
-
-                    return Err(Err {
-                        reason: ErrorReason::Syntax,
-                        message: format!("expected item after: {}", c),
-                    });
-                }
                 ' ' => {
                     // if there is previous entry, commit it as arbitrary
                     if entry.len() > 0 {
@@ -284,7 +271,7 @@ pub fn tokenize(
                                             num: None,
                                             position: Position {
                                                 line,
-                                                column: col_fn(column, entry.len()),
+                                                column: col_fn(column, entry.len()) - 1,
                                             },
                                         },
                                         tokens_chan,
@@ -347,7 +334,28 @@ pub fn tokenize(
                         entry.clear();
                     }
 
-                    token_commit(Kind::Comma)?;
+                    token_commit(Kind::Separator)?;
+                }
+                '.' => {
+                    // if there is a previous entry let's try resolve as [Identifier][AccessorOp][Identifier]
+                    if entry.len() > 0 && IDENTIFIER_REGEX.is_match(&entry) {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens_chan,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+
+                        entry.clear();
+                        token_commit(Kind::AccessorOp)?;
+                        continue;
+                    }
+
+                    // should later resolve as [Number][.][Number]
+                    entry.push(c);
+                    last_line_column.0 = line;
+                    last_line_column.1 = column + 1;
                 }
                 '!' => {
                     token_commit(Kind::Bang)?;
@@ -358,12 +366,59 @@ pub fn tokenize(
                 '=' => {
                     token_commit(Kind::Return)?;
                 }
-                // '{' => {
-                //     // start of function expression
-                // }
-                // '(' => {
-                //     // start of expression
-                // }
+                '(' => {
+                    token_commit(Kind::LeftParen)?;
+                }
+                ')' => {
+                    token_commit(Kind::RightParen)?;
+                }
+                '~' => {
+                    token_commit(Kind::NegationOp)?;
+                }
+                '+' => {
+                    token_commit(Kind::AddOp)?;
+                }
+                '*' => {
+                    token_commit(Kind::MultiplyOp)?;
+                }
+                '/' => {
+                    if let Some((_, '/')) = buf_iter.peek() {
+                        buf_iter.next(); // advance iterator to next item
+                        break;
+                    }
+
+                    // commit as divideOp
+                    token_commit(Kind::DivideOp)?;
+                }
+                '%' => {
+                    token_commit(Kind::ModulusOp)?;
+                }
+                '&' => {
+                    token_commit(Kind::LogicalAndOp)?;
+                }
+                '|' => {
+                    token_commit(Kind::LogicalOrOp)?;
+                }
+                '>' => {
+                    // if the previous entry has '-', this is a function arrow
+                    if entry == "-" {
+                        commit_arbitrary(
+                            entry.clone() + ">",
+                            tokens_chan,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+
+                        entry.clear();
+                        continue;
+                    }
+
+                    token_commit(Kind::GreaterThanOp)?;
+                }
+                '<' => {
+                    token_commit(Kind::LessThanOp)?;
+                }
                 _ => {
                     entry.push(c);
                     last_line_column.0 = line;
@@ -409,7 +464,7 @@ fn commit_arbitrary(
         return Ok(());
     }
 
-    let type_token = |kind| {
+    let commit_token = |kind| {
         commit(
             Tok {
                 kind,
@@ -423,31 +478,30 @@ fn commit_arbitrary(
     };
 
     match entry.as_str() {
-        "uint8" | "byte" | "uint16" | "uint32" | "uint64" | "uint" | "int8" | "int16" | "int32"
-        | "int" | "rune" | "int64" | "float32" | "float64" | "float" => {
-            type_token(Kind::TypeName(number_type_to_enum(&entry)))
-        }
+        "number" => commit_token(Kind::TypeName(Type::Number)),
 
-        "bool" => type_token(Kind::TypeName(Type::Bool)),
+        "bool" => commit_token(Kind::TypeName(Type::Bool)),
 
-        "string" => type_token(Kind::TypeName(Type::String)),
+        "string" => commit_token(Kind::TypeName(Type::String)),
 
-        "->" => type_token(Kind::FunctionArrow),
+        "->" => commit_token(Kind::FunctionArrow),
 
-        "true" => type_token(Kind::TrueLiteral),
+        "true" => commit_token(Kind::TrueLiteral),
 
-        "false" => type_token(Kind::FalseLiteral),
+        "false" => commit_token(Kind::FalseLiteral),
 
-        "()" => type_token(Kind::TypeName(Type::Empty)),
+        "()" => commit_token(Kind::TypeName(Type::Empty)),
+
+        "==" => commit_token(Kind::EqualOp),
 
         _ => {
             // check if entry string is numerical
-            if <f64>::from_str_radix(&entry.clone(), 10).is_ok() {
+            if let Ok(num) = entry.parse::<f64>() {
                 return commit(
                     Tok {
                         kind: Kind::NumberLiteral,
-                        str: Some(entry.to_string()),
-                        num: None,
+                        str: None,
+                        num: Some(num),
                         position: Position { line, column },
                     },
                     tokens_chan,
@@ -455,7 +509,7 @@ fn commit_arbitrary(
                 );
             }
 
-            // identifiers should not start with a number: a-z, A-Z, or _
+            // identifiers should start with a number: a-z, A-Z, or _
             if !IDENTIFIER_REGEX.is_match(entry.as_str()) {
                 return Err(Err {
                     reason: ErrorReason::Syntax,
@@ -477,23 +531,6 @@ fn commit_arbitrary(
     }
 }
 
-/// takes a type identifier for a number and returns the corresponding type
-pub fn number_type_to_enum(name: &str) -> Type {
-    match name {
-        "uint8" | "byte" => Type::Uint8,
-        "uint16" => Type::Uint16,
-        "uint32" => Type::Uint32,
-        "uint64" | "uint" => Type::Uint64,
-        "int8" => Type::Int8,
-        "int16" => Type::Int16,
-        "int32" | "int" | "rune" => Type::Int32,
-        "int64" => Type::Int64,
-        "float32" => Type::Float32,
-        "float64" | "float" => Type::Float64,
-        _ => panic!("invalid number type"),
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -506,11 +543,11 @@ mod test {
     fn test_commit_arbitrary() {
         let (tx, rx) = channel::<Tok>();
 
-        commit_arbitrary("uint8".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        commit_arbitrary("number".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
         assert_eq!(
             rx.recv().unwrap(),
             Tok {
-                kind: Kind::TypeName(Type::Uint8),
+                kind: Kind::TypeName(Type::Number),
                 str: None,
                 num: None,
                 position: Position { line: 1, column: 1 }
@@ -533,8 +570,8 @@ mod test {
             rx.recv().unwrap(),
             Tok {
                 kind: Kind::NumberLiteral,
-                str: Some("123.23".to_string()),
-                num: None,
+                str: None,
+                num: Some(123.23),
                 position: Position { line: 1, column: 1 }
             }
         );
@@ -611,7 +648,7 @@ mod test {
             assert_eq!(
                 rx.try_recv().expect("recv chan does not fail"),
                 Tok {
-                    kind: Kind::Comma,
+                    kind: Kind::Separator,
                     str: None,
                     num: None,
                     position: Position { line: 1, column: 1 }
@@ -657,14 +694,14 @@ mod test {
                     kind: Kind::StringLiteral,
                     str: Some("fmt".to_string()),
                     num: None,
-                    position: Position { line: 2, column: 6 }
+                    position: Position { line: 2, column: 5 }
                 }
             );
         }
 
         // tokenize a function signature
         {
-            buf_reader = BufReader::new("sum: a, b int -> int".as_bytes());
+            buf_reader = BufReader::new("sum: a, b number -> number".as_bytes());
             match tokenize(&mut buf_reader, &tx, true, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
@@ -703,7 +740,7 @@ mod test {
             assert_eq!(
                 rx.try_recv().expect("recv chan does not fail"),
                 Tok {
-                    kind: Kind::Comma,
+                    kind: Kind::Separator,
                     str: None,
                     num: None,
                     position: Position { line: 1, column: 7 }
@@ -723,7 +760,7 @@ mod test {
             assert_eq!(
                 rx.try_recv().expect("recv chan does not fail"),
                 Tok {
-                    kind: Kind::TypeName(Type::Int32),
+                    kind: Kind::TypeName(Type::Number),
                     str: None,
                     num: None,
                     position: Position {
@@ -741,7 +778,7 @@ mod test {
                     num: None,
                     position: Position {
                         line: 1,
-                        column: 15
+                        column: 18
                     }
                 }
             );
@@ -749,12 +786,12 @@ mod test {
             assert_eq!(
                 rx.try_recv().expect("recv chan does not fail"),
                 Tok {
-                    kind: Kind::TypeName(Type::Int32),
+                    kind: Kind::TypeName(Type::Number),
                     str: None,
                     num: None,
                     position: Position {
                         line: 1,
-                        column: 18
+                        column: 21
                     }
                 }
             );
@@ -778,141 +815,22 @@ mod test {
             }
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                rx.try_recv().expect("recv chan will not fail"),
                 Tok {
                     kind: Kind::Identifier,
-                    str: Some("mod".to_string()),
+                    str: Some("println".to_string()),
                     num: None,
                     position: Position { line: 2, column: 1 }
                 }
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                rx.try_recv().expect("recv chan will not fail"),
                 Tok {
                     kind: Kind::StringLiteral,
-                    str: Some("fmt".to_string()),
+                    str: Some("Hello World!".to_string()),
                     num: None,
-                    position: Position { line: 2, column: 6 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Identifier,
-                    str: Some("main".to_string()),
-                    num: None,
-                    position: Position { line: 5, column: 1 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Colon,
-                    str: None,
-                    num: None,
-                    position: Position { line: 5, column: 5 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::TypeName(Type::Empty),
-                    str: None,
-                    num: None,
-                    position: Position { line: 5, column: 7 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::FunctionArrow,
-                    str: None,
-                    num: None,
-                    position: Position {
-                        line: 5,
-                        column: 10
-                    }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::TypeName(Type::Empty),
-                    str: None,
-                    num: None,
-                    position: Position {
-                        line: 5,
-                        column: 13
-                    }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Identation,
-                    str: None,
-                    num: None,
-                    position: Position { line: 6, column: 1 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Identation,
-                    str: None,
-                    num: None,
-                    position: Position { line: 7, column: 1 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Return,
-                    str: None,
-                    num: None,
-                    position: Position { line: 7, column: 4 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Identifier,
-                    str: Some("fmt".to_string()),
-                    num: None,
-                    position: Position { line: 7, column: 6 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::ModuleAccessor,
-                    str: None,
-                    num: None,
-                    position: Position { line: 7, column: 9 }
-                }
-            );
-
-            assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
-                Tok {
-                    kind: Kind::Identifier,
-                    str: Some("println".to_string()),
-                    num: None,
-                    position: Position {
-                        line: 7,
-                        column: 11
-                    }
+                    position: Position { line: 2, column: 9 }
                 }
             );
         }

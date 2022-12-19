@@ -1,7 +1,2 @@
 // First hello world program
-mod "fmt"
-// The entry point of a Speak program is `main`.
-
-main: () -> ()
-   // Comments start with double forward slashes.
-   = fmt::println "Hello World!"
+println "Hello World!"

@@ -2,31 +2,25 @@ use self::value::_Value;
 
 use super::{
     error::{Err, ErrorReason},
+    lexer::{tokenize, Tok},
     log::{log_debug, log_err},
-    parser::_Node,
+    parser::{_Node, parse},
 };
-use std::{collections::HashMap, env, sync::mpsc::Receiver};
+use std::{
+    collections::HashMap,
+    env, fmt,
+    fs::{self, File},
+    io::{BufReader, Bytes},
+    sync::mpsc::channel,
+};
 
 const MAX_PRINT_LEN: usize = 120;
 
 pub mod r#type {
     #[derive(Debug, PartialEq, Eq, Clone)]
     pub enum Type {
-        // Unsigned integer types.
-        Uint8, // `byte` is an alias
-        Uint16,
-        Uint32,
-        Uint64, // `uint` is an alias
-
-        // Signed integer types.
-        Int8,
-        Int16,
-        Int32, // `int` | `rune` is an alias
-        Int64,
-
-        // Floating point types.
-        Float32,
-        Float64, // `float` is an alias
+        // Floating point number: f64
+        Number,
 
         // Boolean type.
         Bool,
@@ -60,16 +54,7 @@ pub mod r#type {
     impl Type {
         pub fn string(&self) -> String {
             match self {
-                Type::Uint8 => "byte".to_string(),
-                Type::Uint16 => "uint16".to_string(),
-                Type::Uint32 => "uint32".to_string(),
-                Type::Uint64 => "uint".to_string(),
-                Type::Int8 => "int8".to_string(),
-                Type::Int16 => "int16".to_string(),
-                Type::Int32 => "int".to_string(),
-                Type::Int64 => "int64".to_string(),
-                Type::Float32 => "float32".to_string(),
-                Type::Float64 => "float".to_string(),
+                Type::Number => "number".to_string(),
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
                 Type::Array { r#type } => format!("[]{}", r#type.string()),
@@ -85,55 +70,35 @@ pub mod r#type {
 }
 
 pub mod value {
-    use crate::core::{
-        error::{Err, ErrorReason},
-        lexer::number_type_to_enum,
-        parser::_Node,
-    };
-    use std::{any::Any, cell::RefCell};
-    use std::{
-        fmt::{Debug, Display},
-        rc::Rc,
-    };
+    use crate::core::{error::Err, parser::_Node};
+    use std::fmt::{self, Debug};
 
-    use super::{r#type::Type, StackFrame, VTable, MAX_PRINT_LEN};
-    use num_traits::{cast, FromPrimitive, Num, NumCast, Signed, ToPrimitive};
+    use super::{r#type::Type, Context, VTable, MAX_PRINT_LEN};
 
     /// Value represents any value in the Speak programming language.
     /// Each value corresponds to some primitive or object value created
     /// during the execution of a Speak program.
-    #[derive(Debug, PartialEq, Clone)]
+    #[derive(Debug, Clone)]
     pub enum _Value {
-        Numeric(_Numeric),
+        Number(f64),
         Bool(bool),
         String(String),
 
-        // Function is the value of any variables referencing functions
-        // defined in a Speak program.
+        /// This is the value of any variables referencing functions
+        /// defined in a Speak program.
         Function(Function),
 
-        // FunctionCallThunk is an internal representation of a lazy
-        // function evaluation used to implement tail call optimization.
-        FunctionCallThunk { vt: VTable, func: Function },
+        /// This is an internal representation of a lazy
+        /// function evaluation used to implement tail call optimization.
+        FunctionCallThunk {
+            vt: VTable,
+            func: Function,
+        },
 
         Empty,
     }
 
-    #[derive(Debug, PartialEq, Clone)]
-    pub enum _Numeric {
-        Uint8(u8),
-        Uint16(u16),
-        Uint32(u32),
-        Uint64(u64),
-        Int8(i8),
-        Int16(i16),
-        Int32(i32),
-        Int64(i64),
-        Float32(f32),
-        Float64(f64),
-    }
-
-    #[derive(Debug, PartialEq, Clone)]
+    #[derive(Debug, Clone)]
     pub struct Function {
         // defn must be of variant `FunctionLiteral`.
         pub defn: Box<_Node>,
@@ -154,49 +119,32 @@ pub mod value {
     impl _Value {
         pub fn value_type(&self) -> Type {
             match self {
-                _Value::Numeric(n) => match n {
-                    _Numeric::Uint8(_) => Type::Uint8,
-                    _Numeric::Uint16(_) => Type::Uint16,
-                    _Numeric::Uint32(_) => Type::Uint32,
-                    _Numeric::Uint64(_) => Type::Uint64,
-                    _Numeric::Int8(_) => Type::Int8,
-                    _Numeric::Int16(_) => Type::Int16,
-                    _Numeric::Int32(_) => Type::Int32,
-                    _Numeric::Int64(_) => Type::Int64,
-                    _Numeric::Float32(_) => Type::Float32,
-                    _Numeric::Float64(_) => Type::Float64,
-                },
+                _Value::Number(_) => Type::Number,
                 _Value::Bool(_) => Type::Bool,
                 _Value::String(_) => Type::String,
-                _Value::Function { .. } => Type::Function,
-                _Value::FunctionCallThunk { .. } => Type::Function,
+                _Value::Function { .. } | _Value::FunctionCallThunk { .. } => Type::Function,
                 _Value::Empty => Type::Empty,
             }
         }
 
-        pub fn equals(&self, value: Self) -> bool {
-            *self == value
+        pub fn equals(&self, value: _Value) -> bool {
+            match (self, value) {
+                (_Value::Number(a), _Value::Number(b)) => a == &b,
+                (_Value::Bool(a), _Value::Bool(b)) => a == &b,
+                (_Value::String(a), _Value::String(b)) => a == &b,
+                (_Value::Empty, _) | (_, _Value::Empty) => true,
+                _ => false, // types here are incomparable
+            }
         }
 
         pub fn string(&self) -> String {
             match self {
-                _Value::Numeric(n) => match n {
-                    _Numeric::Uint8(value) => value.to_string(),
-                    _Numeric::Uint16(value) => value.to_string(),
-                    _Numeric::Uint32(value) => value.to_string(),
-                    _Numeric::Uint64(value) => value.to_string(),
-                    _Numeric::Int8(value) => value.to_string(),
-                    _Numeric::Int16(value) => value.to_string(),
-                    _Numeric::Int32(value) => value.to_string(),
-                    _Numeric::Int64(value) => value.to_string(),
-                    _Numeric::Float32(value) => value.to_string(),
-                    _Numeric::Float64(value) => value.to_string(),
-                },
+                _Value::Number(value) => value.to_string(),
                 _Value::Bool(value) => value.to_string(),
                 _Value::String(value) => value.to_string(),
                 _Value::Function(func) => func.string(),
                 _Value::FunctionCallThunk { func, vt: _ } => {
-                    format!("Thubk of ({})", func.string())
+                    format!("Thunk of ({})", func.string())
                 }
                 _Value::Empty => "()".to_string(),
             }
@@ -204,11 +152,28 @@ pub mod value {
     }
 }
 
-pub struct Engine {}
+pub struct NativeFunction<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>>(String, F);
+
+impl<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>> fmt::Debug for NativeFunction<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NativeFunction {{ name: {} }}", self.0)
+    }
+}
+
+/// This is a global execution context for the lifetime of the Speak program.
+#[derive(Debug)]
+pub struct Engine {
+    pub fatal_error: bool,
+    pub debug_lex: bool,
+    pub debug_parse: bool,
+    pub debug_dump: bool,
+    pub native_functions:
+        HashMap<String, NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>>,
+}
 
 /// ValueTable is used anytime a map of names/labels to Speak Values is needed,
 /// and is notably used to represent stack frames/heaps and CompositeValue dictionaries.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct VTable(HashMap<String, _Value>);
 
 impl VTable {
@@ -227,7 +192,7 @@ impl VTable {
 
 /// StackFrame represents the heap of variables local to a particular function call frame,
 /// and recursively references other parent StackFrames internally.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum StackFrame {
     Frame { item: VTable, next: Box<StackFrame> },
     Nil,
@@ -302,19 +267,21 @@ impl StackFrame {
 
 /// Context represents a single, isolated execution context with its global heap,
 /// imports, call stack, and cwd (working directory).
+#[derive(Debug)]
 pub struct Context {
     /// cwd is an always-absolute path to current working dir (of module system)
-    cwd: String,
+    cwd: Option<String>,
     /// The currently executing file's path, if any
-    file: String,
-    engine: Engine,
+    file: Option<String>,
+
+    //   engine: &'a Engine,
     /// Frame represents the Context's global heap
     frame: StackFrame,
 }
 
 impl Context {
     fn reset_wd(&mut self) {
-        self.cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
+        self.cwd = Some(env::current_dir().unwrap().to_str().unwrap().to_string());
     }
 
     pub fn dump(&self) {
@@ -354,6 +321,27 @@ impl Context {
         }
 
         Ok(last_val)
+    }
+
+    /// Runs a Speak program defined by the buffer. This is the main way to invoke Speak programs
+    /// from Rust.
+    pub fn exec(&mut self, eng: &Engine, input: BufReader<&[u8]>) -> Result<_Value, Err> {
+        let (tx, rx) = channel::<Tok>();
+
+        let mut buf = input;
+        tokenize(&mut buf, &tx, eng.fatal_error, eng.debug_lex)?;
+
+        let (nodes_chan, nodes_rx) = channel::<_Node>();
+
+        parse(rx, nodes_chan, eng.fatal_error, eng.debug_parse)?;
+
+        self.eval(nodes_rx.iter().collect::<Vec<_Node>>(), eng.debug_dump)
+    }
+
+    /// Allows to Exec() a program file in a given context.
+    pub fn exec_path(&mut self, eng: &Engine, path: &str) -> Result<_Value, Err> {
+        let data = fs::read(path).expect("will resolve to the hello_world.spk file");
+        self.exec(eng, BufReader::new(&data[..]))
     }
 }
 

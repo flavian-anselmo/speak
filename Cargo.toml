@@ -10,5 +10,4 @@ the use of multiple spoken languages as preferred by the programmer."""
 [dependencies]
 clap = { version = "3.2.23", features = ["derive"] }
 lazy_static = "1.4.0"
-num-traits = "0.2"
 regex = "1.7.0"

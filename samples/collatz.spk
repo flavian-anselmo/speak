@@ -1,19 +1,19 @@
 // finding long collatz sequences
 mod "fmt"
 
-next: n int -> int
+next: n number -> number
     if n % 2 == 0 ? = n / 2 ! = 3 * n + 1
 
-sequence: start int -> []int
+sequence: start number -> []number
     if start < 2
         ? = start
-        !   sub is _: n int, acc []int -> []int
+        !   sub is (_: n number, acc []number -> []number
                 if n == 1 = acc
-                = sub (next n) (len acc) }
+                = sub (next n) (len acc))
             = sub start [start:]
 
-longestSequenceUnder: max int -> []int
-    sub is _: n, prevMax int, prevSeq []int -> []int
+longestSequenceUnder: max number -> []number
+    sub is _: n, prevMax number, prevSeq []number -> []number
         if n == max
             ? = prevSeq
             !   currSeq is sequence n
@@ -22,9 +22,9 @@ longestSequenceUnder: max int -> []int
 			    = sub n + 1 prevMax prevSeq
     = sub 1 0 []
 
-main: () -> ()
-    // run a search for longest collatz sequence under max
-    max is 1_000
-    longest is longestSequenceUnder max
-    fmt::logf("Longest collatz seq under {max} is {len} items")
-    = fmt::log(longest) // List has a string method
+
+// run a search for longest collatz sequence under max
+max is 1_000
+longest is longestSequenceUnder max
+fmt::logf("Longest collatz seq under {max} is {len} items")
+= fmt::log(longest) // List has a string method

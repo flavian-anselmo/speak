@@ -1,7 +1,5 @@
 // Let's graph the sine / cosine functions in Speak!
-mod 
-    "fmt" 
-    "math"
+mod "fmt", "math"
 
 // repeat a string n times
 repeat: s string, n int -> string

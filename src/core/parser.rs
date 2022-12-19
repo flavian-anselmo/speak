@@ -3,20 +3,16 @@ use super::{
     eval::StackFrame,
     eval::{
         r#type::Type,
-        value::{Function, _Numeric, _Value},
+        value::{Function, _Value},
     },
     lexer::{Kind, Position, Tok},
 };
-use num_traits::Num;
 use std::{
-    cell::RefCell,
     fmt::Debug,
-    ops::{Sub, SubAssign},
-    rc::Rc,
     sync::mpsc::{Receiver, Sender},
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Operand {
     Value(_Value),
     Identifier(String),
@@ -32,11 +28,10 @@ impl Operand {
 }
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum _Node {
     NumberLiteral {
-        str_value: String,
-        number_type: Option<Type>,
+        value: f64,
         position: Position,
     },
     StringLiteral {
@@ -80,7 +75,7 @@ pub enum _Node {
 impl _Node {
     pub fn string(&self) -> String {
         match self {
-            _Node::NumberLiteral { str_value, .. } => str_value.clone(),
+            _Node::NumberLiteral { value, .. } => value.to_string(),
             _Node::StringLiteral { value, .. } => value.clone(),
             _Node::BoolLiteral { value, .. } => value.to_string(),
             _Node::EmptyIdentifier { .. } => "".to_string(),
@@ -113,7 +108,7 @@ impl _Node {
             }
             _Node::FunctionLiteral {
                 arguments,
-                body,
+                body: _,
                 position,
             } => arguments
                 .iter()
@@ -139,73 +134,7 @@ impl _Node {
 
     pub fn eval(&mut self, stack: &mut StackFrame, allow_thunk: bool) -> Result<_Value, Err> {
         match self {
-            _Node::NumberLiteral {
-                str_value,
-                number_type,
-                ..
-            } => {
-                if let Some(t) = number_type {
-                    return match t {
-                        Type::Uint8 => {
-                            Ok(_Value::Numeric(_Numeric::Uint8(eval_number_literal::<u8>(
-                                &str_value,
-                            )?)))
-                        }
-                        Type::Uint16 => Ok(_Value::Numeric(_Numeric::Uint16(
-                            eval_number_literal::<u16>(&str_value)?,
-                        ))),
-                        Type::Uint32 => Ok(_Value::Numeric(_Numeric::Uint32(
-                            eval_number_literal::<u32>(&str_value)?,
-                        ))),
-                        Type::Uint64 => Ok(_Value::Numeric(_Numeric::Uint64(
-                            eval_number_literal::<u64>(&str_value)?,
-                        ))),
-                        Type::Int8 => Ok(_Value::Numeric(_Numeric::Int8(
-                            eval_number_literal::<i8>(&str_value)?,
-                        ))),
-                        Type::Int16 => {
-                            Ok(_Value::Numeric(_Numeric::Int16(
-                                eval_number_literal::<i16>(&str_value)?,
-                            )))
-                        }
-                        Type::Int32 => {
-                            Ok(_Value::Numeric(_Numeric::Int32(
-                                eval_number_literal::<i32>(&str_value)?,
-                            )))
-                        }
-                        Type::Int64 => {
-                            Ok(_Value::Numeric(_Numeric::Int64(
-                                eval_number_literal::<i64>(&str_value)?,
-                            )))
-                        }
-                        Type::Float32 => {
-                            Ok(_Value::Numeric(_Numeric::Float32(eval_number_literal::<
-                                f32,
-                            >(
-                                &str_value
-                            )?)))
-                        }
-                        Type::Float64 => {
-                            Ok(_Value::Numeric(_Numeric::Float64(eval_number_literal::<
-                                f64,
-                            >(
-                                &str_value
-                            )?)))
-                        }
-                        _ => {
-                            return Err(Err {
-                                message: "invalid number type".to_string(),
-                                reason: ErrorReason::System,
-                            })
-                        }
-                    };
-                }
-                Ok(_Value::Numeric(_Numeric::Float64(eval_number_literal::<
-                    f64,
-                >(
-                    str_value.as_str()
-                )?)))
-            }
+            _Node::NumberLiteral { value, .. } => Ok(_Value::Number(*value)),
             _Node::StringLiteral { value, .. } => Ok(_Value::String(value.clone())), // Tidy: this is a copy
             _Node::BoolLiteral { value, .. } => Ok(_Value::Bool(value.clone())), // Tidy: this is a copy
             _Node::EmptyIdentifier { .. } => Ok(_Value::Empty),
@@ -226,36 +155,10 @@ impl _Node {
                 let mut_operand = |op: &mut Operand| -> Result<(), Err> {
                     match op {
                         Operand::Value(v) => match v {
-                            _Value::Numeric(nt) => match nt {
-                                _Numeric::Int8(v) => {
-                                    *v = -*v;
-                                    Ok(())
-                                }
-                                _Numeric::Int16(v) => {
-                                    *v = -*v;
-                                    Ok(())
-                                }
-                                _Numeric::Int32(v) => {
-                                    *v = -*v;
-                                    Ok(())
-                                }
-                                _Numeric::Int64(v) => {
-                                    *v = -*v;
-                                    Ok(())
-                                }
-                                _Numeric::Float32(v) => {
-                                    *v = -*v;
-                                    Ok(())
-                                }
-                                _Numeric::Float64(v) => {
-                                    *v = -*v;
-                                    Ok(())
-                                }
-                                _ => Err(Err {
-                                    message: "invalid number type".to_string(),
-                                    reason: ErrorReason::System,
-                                }),
-                            },
+                            _Value::Number(nt) => {
+                                *nt = -*nt;
+                                Ok(())
+                            }
                             _Value::Bool(b) => {
                                 *b = !*b;
                                 Ok(())
@@ -348,29 +251,189 @@ fn eval_speak_function<'a>(
     unimplemented!() // TODO: implement
 }
 
-/// the number evaluation requires inferring the type of the number thus a more generic
-/// implementation is required.
-pub fn eval_number_literal<T: num_traits::Num>(value: &str) -> Result<T, Err> {
-    match T::from_str_radix(value, 10) {
-        Ok(v) => Ok(v),
-        Err(_err) => Err(Err {
-            message: "error occured evaluating number literal".to_string(),
-            reason: ErrorReason::System,
-        }),
-    }
-}
-
-#[test]
-fn this_test() {
-    let res = eval_number_literal::<f32>("0.234");
-    assert!(Ok(0.234f32) == res);
-}
-
-pub fn parse<N>(
+// Parses a stream of tokens into a stream of nodes. This implementation is a recursive descent parser.
+pub fn parse(
     tokens_chan: Receiver<Tok>,
-    nodes_chan: Sender<N>,
+    nodes_chan: Sender<_Node>,
     fatal_error: bool,
     debug_parser: bool,
 ) -> Result<(), Err> {
+    let tokens: Vec<Tok> = tokens_chan.iter().collect();
+    let (mut idx, length) = (0, tokens.len());
+
+    while idx < length {
+        let (node, consumed) = parse_expression(&tokens[idx..], fatal_error)?;
+
+        if debug_parser {
+            println!("parse -> {}", node.string());
+        }
+
+        nodes_chan.send(node).expect("this will always be valid");
+
+        idx += consumed;
+    }
+
+    Ok(())
+}
+
+fn get_op_priority(t: Tok) -> i8 {
+    // higher number means higher priority
+    match t.kind {
+        Kind::AccessorOp => 50,
+
+        Kind::ModulusOp => 40,
+
+        Kind::MultiplyOp | Kind::DivideOp => 25,
+
+        Kind::AddOp | Kind::SubtractOp => 20,
+
+        Kind::GreaterThanOp | Kind::LessThanOp | Kind::EqualOp => 15,
+
+        Kind::AssignOp => 0,
+
+        _ => -1,
+    }
+}
+
+fn isBinaryOp(t: Tok) -> bool {
+    match t.kind {
+        Kind::AccessorOp
+        | Kind::ModulusOp
+        | Kind::MultiplyOp
+        | Kind::DivideOp
+        | Kind::AddOp
+        | Kind::SubtractOp
+        | Kind::GreaterThanOp
+        | Kind::LessThanOp
+        | Kind::EqualOp
+        | Kind::AssignOp => true,
+        _ => false,
+    }
+}
+
+fn parse_expression(tokens: &[Tok], fatal_error: bool) -> Result<(_Node, usize), Err> {
     unimplemented!()
+}
+
+fn parse_binary_expression(
+    left_operand: _Node,
+    operator: Tok,
+    tokens: &[Tok],
+    previous_priority: i8,
+    fatal_error: bool,
+) -> Result<(_Node, usize), Err> {
+    unimplemented!()
+}
+
+fn parse_atom(tokens: &[Tok], fatal_error: bool) -> Result<(_Node, usize), Err> {
+    guard_unexpected_input_end(tokens, 0)?;
+
+    let (tok, idx) = (&tokens[0], 1);
+
+    if tok.kind == Kind::NegationOp {
+        let (operand, consumed) = parse_atom(&tokens[idx..], fatal_error)?;
+
+        return Ok((
+            _Node::UnaryExpression {
+                operator: tok.kind.clone(),
+                operand: to_operand(operand)?,
+                position: tok.position.clone(),
+            },
+            consumed + 1,
+        ));
+    }
+
+    guard_unexpected_input_end(tokens, 0)?;
+
+    let mut atom: _Node;
+    match tok.kind {
+        Kind::NumberLiteral => {
+            unimplemented!() // TODO: implement for dynamic handling of types
+        }
+
+        Kind::StringLiteral => {
+            return Ok((
+                _Node::StringLiteral {
+                    value: tok.str.clone().expect("this node has this value present"),
+                    position: tok.position.clone(),
+                },
+                idx,
+            ));
+        }
+
+        Kind::TrueLiteral => {
+            return Ok((
+                _Node::BoolLiteral {
+                    value: true,
+                    position: tok.position.clone(),
+                },
+                idx,
+            ));
+        }
+
+        Kind::FalseLiteral => {
+            return Ok((
+                _Node::BoolLiteral {
+                    value: false,
+                    position: tok.position.clone(),
+                },
+                idx,
+            ));
+        }
+
+        Kind::Identifier => {
+            unimplemented!()
+        }
+
+        Kind::EmptyIdentifier => {
+            unimplemented!()
+        }
+
+        _ => {
+            return Err(Err {
+                message: format!("unexpected start of atom, found {}", tok.kind.string(),),
+                reason: ErrorReason::Syntax,
+            })
+        }
+    }
+
+    Ok((atom, idx))
+}
+
+fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {
+    if idx >= tokens.len() {
+        if tokens.is_empty() {
+            return Err(Err {
+                message: format!(
+                    "unexpected end of input at {}",
+                    tokens[tokens.len() - 1].kind.string()
+                ),
+                reason: ErrorReason::Syntax,
+            });
+        }
+
+        return Err(Err {
+            message: "unexpected end of input".to_string(),
+            reason: ErrorReason::Syntax,
+        });
+    }
+
+    Ok(())
+}
+
+fn to_operand(n: _Node) -> Result<Operand, Err> {
+    match n {
+        _Node::BoolLiteral { value, .. } => Ok(Operand::Value(_Value::Bool(value))),
+
+        _Node::Identifier { value, .. } => Ok(Operand::Identifier(value)),
+
+        _Node::NumberLiteral { value, .. } => Ok(Operand::Value(_Value::Number(value))),
+
+        _ => {
+            Err(Err {
+                message: "the node is not an operand".to_string(), // FIXME: this is not a good error message
+                reason: ErrorReason::System,
+            })
+        }
+    }
 }
