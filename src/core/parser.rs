@@ -348,7 +348,13 @@ fn parse_atom(tokens: &[Tok], fatal_error: bool) -> Result<(_Node, usize), Err> 
     let mut atom: _Node;
     match tok.kind {
         Kind::NumberLiteral => {
-            unimplemented!() // TODO: implement for dynamic handling of types
+            return Ok((
+                _Node::NumberLiteral {
+                    value: tok.num.clone().expect("this node has this value present"),
+                    position: tok.position.clone(),
+                },
+                idx,
+            ));
         }
 
         Kind::StringLiteral => {
@@ -429,11 +435,14 @@ fn to_operand(n: _Node) -> Result<Operand, Err> {
 
         _Node::NumberLiteral { value, .. } => Ok(Operand::Value(_Value::Number(value))),
 
-        _ => {
-            Err(Err {
-                message: "the node is not an operand".to_string(), // FIXME: this is not a good error message
-                reason: ErrorReason::System,
-            })
-        }
+        _ => Err(Err {
+            message: format!(
+                "the node, {} at {}, is not an operand",
+                n.string(),
+                n.position().string()
+            )
+            .to_string(),
+            reason: ErrorReason::System,
+        }),
     }
 }

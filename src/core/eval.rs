@@ -5,6 +5,7 @@ use super::{
     lexer::{tokenize, Tok},
     log::{log_debug, log_err},
     parser::{_Node, parse},
+    runtime::{speak_len, speak_println},
 };
 use std::{
     collections::HashMap,
@@ -143,7 +144,7 @@ pub mod value {
                 _Value::Bool(value) => value.to_string(),
                 _Value::String(value) => value.to_string(),
                 _Value::Function(func) => func.string(),
-                _Value::FunctionCallThunk { func, vt: _ } => {
+                _Value::FunctionCallThunk { func, .. } => {
                     format!("Thunk of ({})", func.string())
                 }
                 _Value::Empty => "()".to_string(),
@@ -160,6 +161,18 @@ impl<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>> fmt::Debug for NativeFun
     }
 }
 
+type NativeFn = NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>;
+
+pub fn load_func() -> HashMap<String, NativeFn> {
+    let r#println: NativeFn = NativeFunction("println".to_string(), speak_println);
+    let r#len: NativeFn = NativeFunction("len".to_string(), speak_len);
+
+    HashMap::from([
+        ("println".to_string(), r#println),
+        ("len".to_string(), r#len),
+    ])
+}
+
 /// This is a global execution context for the lifetime of the Speak program.
 #[derive(Debug)]
 pub struct Engine {
@@ -169,6 +182,18 @@ pub struct Engine {
     pub debug_dump: bool,
     pub native_functions:
         HashMap<String, NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>>,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self {
+            fatal_error: true,
+            debug_lex: false,
+            debug_parse: true,
+            debug_dump: false,
+            native_functions: load_func(),
+        }
+    }
 }
 
 /// ValueTable is used anytime a map of names/labels to Speak Values is needed,
