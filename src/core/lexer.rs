@@ -21,12 +21,8 @@ pub enum Kind {
     // Expr,
     Identifier,
     EmptyIdentifier,
-    Identation, // $ single tab character
 
-    IfClause,
-    IfExpr,
-    WhereClause,
-    WhereExpr,
+    If,
 
     TrueLiteral,
     FalseLiteral,
@@ -71,12 +67,8 @@ impl Kind {
             // Kind::Expr => "expression".to_string(),
             Kind::Identifier => "identifier".to_string(),
             Kind::EmptyIdentifier => "'_'".to_string(),
-            Kind::Identation => "identation".to_string(),
 
-            Kind::IfClause => "if clause".to_string(),
-            Kind::IfExpr => "if expression".to_string(),
-            Kind::WhereClause => "where clause".to_string(),
-            Kind::WhereExpr => "where expression".to_string(),
+            Kind::If => "if".to_string(),
 
             Kind::TrueLiteral => "true literal".to_string(),
             Kind::FalseLiteral => "false literal".to_string(),
@@ -193,35 +185,6 @@ pub fn tokenize(
         // if starts with an identation, log the identation to the token stream
         let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
         let mut count = 0;
-        loop {
-            // identation is 3 spaces
-            if let Some((i, c)) = buf_iter.peek() {
-                if *c == ' ' {
-                    if count == 2 {
-                        commit(
-                            Tok {
-                                kind: Kind::Identation,
-                                str: None,
-                                num: None,
-                                position: Position {
-                                    line,
-                                    column: col_fn(*i + 1, 3),
-                                },
-                            },
-                            tokens_chan,
-                            &debug_lexer,
-                        )?;
-                        // reset the count
-                        count = 0;
-                    }
-
-                    count += 1;
-                    buf_iter.next(); //advance iterator to net item.
-                    continue;
-                }
-                break;
-            }
-        }
 
         //   let mut comment = false;
         let mut entry = String::new();
@@ -494,6 +457,8 @@ fn commit_arbitrary(
 
         "==" => commit_token(Kind::EqualOp),
 
+        "if" => commit_token(Kind::If),
+
         _ => {
             // check if entry string is numerical
             if let Ok(num) = entry.parse::<f64>() {
@@ -622,16 +587,6 @@ mod test {
                 Err(e) => panic!("error: {}", e.message),
             }
 
-            assert_eq!(
-                rx.try_recv()
-                    .expect("recv chan must be an identation token"),
-                Tok {
-                    kind: Kind::Identation,
-                    str: None,
-                    num: None,
-                    position: Position { line: 1, column: 1 },
-                },
-            );
             assert_eq!(
                 rx.try_recv().expect_err("recv chan must fail"),
                 TryRecvError::Empty

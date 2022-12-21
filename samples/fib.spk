@@ -1,21 +1,18 @@
 // Fibonacci sequence generator
-mod "fmt"
-
+//
 // naive implementation
-fib: n int64 -> int64
-    where n:
-        0 ? = 0
-        1 ? = 1
-        _ ? = (fib n - 1) + (fib n - 2)
+fib: n number -> number
+    if n == 0 ? = 0
+    if n == 1 ? = 1
+    = (fib n - 1) + (fib n - 2)
 
 // memoized implementation
-fibMemo: n int64 -> int64
-    memo is [0, 1]
-    if memo[:n:] == ()
-        memo[:n:] is (fibMemo n - 1) + (fibMemo n - 2)
-    = memo[:n:]
+fibMemo: n number -> number
+    memo is [0, 1,] // The trailing separator is important. 
+    if memo[n] == () ? memo[n] is (fibMemo n - 1) + (fibMemo n - 2)
+    = memo[n]
 
-main: () -> ()
-    fmt::log "fib(20) is 6765:"
-    fmt::println "Naive solution: {fib 20}"
-    = fmt::println "Dynamic solution: {fibMemo 20}"
+
+log "(fib 20) is 6765:"
+println "Naive solution: {}" fib 20
+println "Dynamic solution: {}" fibMemo 20

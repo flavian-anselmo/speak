@@ -5,7 +5,7 @@ use super::{
     lexer::{tokenize, Tok},
     log::{log_debug, log_err},
     parser::{_Node, parse},
-    runtime::{speak_len, speak_println},
+    runtime::{speak_len, speak_println, speak_sprint, speak_sprintf},
 };
 use std::{
     collections::HashMap,
@@ -165,10 +165,14 @@ type NativeFn = NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>;
 
 pub fn load_func() -> HashMap<String, NativeFn> {
     let r#println: NativeFn = NativeFunction("println".to_string(), speak_println);
+    let r#sprint: NativeFn = NativeFunction("sprint".to_string(), speak_sprint);
+    let r#sprintf: NativeFn = NativeFunction("sprintf".to_string(), speak_sprintf);
     let r#len: NativeFn = NativeFunction("len".to_string(), speak_len);
 
     HashMap::from([
         ("println".to_string(), r#println),
+        ("sprint".to_string(), r#sprint),
+        ("sprintf".to_string(), r#sprintf),
         ("len".to_string(), r#len),
     ])
 }
@@ -358,7 +362,7 @@ impl Context {
 
         let (nodes_chan, nodes_rx) = channel::<_Node>();
 
-        parse(rx, nodes_chan, eng.fatal_error, eng.debug_parse)?;
+        parse(rx, nodes_chan, eng.fatal_error, eng.debug_parse);
 
         self.eval(nodes_rx.iter().collect::<Vec<_Node>>(), eng.debug_dump)
     }

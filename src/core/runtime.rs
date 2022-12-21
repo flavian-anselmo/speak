@@ -1,9 +1,9 @@
 use super::{
-    error::Err,
+    error::{Err, ErrorReason},
     eval::{value::_Value, Context},
 };
 
-pub fn speak_println(ctx: &Context, input: &[_Value]) -> Result<_Value, Err> {
+pub fn speak_println(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
     println!(
         "{}",
         input.iter().fold(String::new(), |acc, x| acc + &x.string())
@@ -12,7 +12,34 @@ pub fn speak_println(ctx: &Context, input: &[_Value]) -> Result<_Value, Err> {
     Ok(_Value::Empty)
 }
 
-pub fn speak_len(ctx: &Context, input: &[_Value]) -> Result<_Value, Err> {
+pub fn speak_sprint(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
+    Ok(_Value::String(input[0].string()))
+}
+
+pub fn speak_sprintf(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
+    if input.len() <= 1 {
+        return Err(Err {
+            reason: ErrorReason::Runtime,
+            message: "sprintf takes at least two arguments".to_string(),
+        });
+    }
+
+    Ok(_Value::String(
+        input[0]
+            .string()
+            .split("{}")
+            .enumerate()
+            .fold(String::new(), |acc, (i, x)| {
+                if i == input.len() - 1 {
+                    acc + x
+                } else {
+                    acc + x + &input[i + 1].string()
+                }
+            }),
+    ))
+}
+
+pub fn speak_len(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
     if input.len() != 1 {
         return Err(Err {
             reason: super::error::ErrorReason::Runtime,
