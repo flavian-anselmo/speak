@@ -246,7 +246,7 @@ impl StackFrame {
     }
 
     /// Sets a value to the provided stack frame.
-    fn set(&mut self, name: String, val: _Value) {
+    pub fn set(&mut self, name: String, val: _Value) {
         if let StackFrame::Frame { item, next: _ } = self {
             item.set(name, val)
         }

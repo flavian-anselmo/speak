@@ -17,15 +17,22 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub enum Operand {
-    Value(_Value),
-    Identifier(String),
+    Value(_Value, Position),
+    Identifier(String, Position),
 }
 
 impl Operand {
     fn string(&self) -> String {
         match self {
-            Operand::Value(v) => v.string(),
-            Operand::Identifier(s) => s.clone(),
+            Operand::Value(v, ..) => v.string(),
+            Operand::Identifier(s, ..) => s.clone(),
+        }
+    }
+
+    fn poss(&self) -> String {
+        match self {
+            Operand::Value(.., p) => p.string(),
+            Operand::Identifier(.., p) => p.string(),
         }
     }
 }
@@ -59,8 +66,8 @@ pub enum _Node {
     },
     BinaryExpression {
         operator: Kind,
-        leftOperand: Operand,
-        rightOperand: Operand,
+        left_operand: Operand,
+        right_operand: Operand,
         position: Position,
     },
     FunctionCall {
@@ -94,8 +101,8 @@ impl _Node {
             } => format!("Unary {} ({})", operator.string(), operand.string()),
             _Node::BinaryExpression {
                 operator,
-                leftOperand,
-                rightOperand,
+                left_operand: leftOperand,
+                right_operand: rightOperand,
                 ..
             } => format!(
                 "Binary {} ({}, {})",
@@ -177,7 +184,7 @@ impl _Node {
             } => {
                 let mut_operand = |op: &mut Operand| -> Result<(), Err> {
                     match op {
-                        Operand::Value(v) => match v {
+                        Operand::Value(v, ..) => match v {
                             _Value::Number(nt) => {
                                 *nt = -*nt;
                                 Ok(())
@@ -204,11 +211,11 @@ impl _Node {
 
                 match operator {
                     Kind::NegationOp => match operand.clone() {
-                        Operand::Value(n) => {
+                        Operand::Value(n, ..) => {
                             mut_operand(operand)?;
                             Ok(n.clone())
                         }
-                        Operand::Identifier(ident) => {
+                        Operand::Identifier(ident, ..) => {
                             if let Some(val) = stack.get(&ident) {
                                 mut_operand(operand)?;
                                 return Ok(val.clone());
@@ -236,12 +243,7 @@ impl _Node {
                     }
                 }
             }
-            _Node::BinaryExpression {
-                operator,
-                leftOperand,
-                rightOperand,
-                position,
-            } => unimplemented!(),
+            _Node::BinaryExpression { .. } => eval_binary_expr_node(&self, stack, &allow_thunk),
             _Node::FunctionCall {
                 function,
                 arguments,
@@ -271,6 +273,367 @@ impl _Node {
             }
         }
     }
+}
+
+fn eval_binary_expr_node(
+    node: &_Node,
+    stack: &mut StackFrame,
+    allow_thunk: &bool,
+) -> Result<_Value, Err> {
+    if let _Node::BinaryExpression {
+        operator,
+        left_operand,
+        right_operand,
+        position,
+    } = node
+    {
+        let mut left_right = || -> Result<(_Value, _Value), Err> {
+            Ok((
+                to_value(left_operand, stack)?,
+                to_value(right_operand, stack)?,
+            ))
+        };
+
+        match operator {
+            Kind::AssignOp => {
+                // left operand must be an identifier node
+                let ident = from_operand_to_identifier(left_operand)?;
+                let right_value = to_value(right_operand, stack)?;
+                stack.set(ident, right_value.clone());
+
+                return Ok(right_value);
+            }
+
+            Kind::AccessorOp => {
+                todo!()
+            }
+
+            Kind::AddOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            return Ok(_Value::Number(left_num + right_num));
+                        }
+                    }
+
+                    _Value::String(left_str) => {
+                        if let _Value::String(right_str) = right_value {
+                            return Ok(_Value::String(format!("{}{}", left_str, right_str)));
+                        }
+                    }
+
+                    _Value::Bool(left_bool) => {
+                        if let _Value::Bool(right_bool) = right_value {
+                            return Ok(_Value::Bool(left_bool || right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support addition, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            ),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::SubtractOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            return Ok(_Value::Number(left_num - right_num));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support subtraction, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::MultiplyOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            return Ok(_Value::Number(left_num * right_num));
+                        }
+                    }
+
+                    _Value::Bool(left_bool) => {
+                        if let _Value::Bool(right_bool) = right_value {
+                            return Ok(_Value::Bool(left_bool && right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support multiplication, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::DivideOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            if right_num == 0f64 {
+                                return Err(Err {
+                                    message: format!(
+                                        "decision by zero error [{}]",
+                                        right_operand.poss()
+                                    )
+                                    .to_string(),
+                                    reason: ErrorReason::Runtime,
+                                });
+                            }
+                            return Ok(_Value::Number(left_num / right_num));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support division, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::ModulusOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            if right_num == 0f64 {
+                                return Err(Err {
+                                    message: format!(
+                                        "decision by zero error in modulus [{}]",
+                                        right_operand.poss()
+                                    )
+                                    .to_string(),
+                                    reason: ErrorReason::Runtime,
+                                });
+                            }
+                            return Ok(_Value::Number(left_num + right_num));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "cannot take modulus of non-integer value {}, at [{}]",
+                                right_value.string(),
+                                left_operand.poss()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::LogicalAndOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    // the LogicalAndOp will perform a bitwise and; `&`.
+                    _Value::Number(left_num) => {
+                        if is_intable(&left_num) {
+                            if let _Value::Number(right_num) = right_value {
+                                if is_intable(&right_num) {
+                                    return Ok(_Value::Number(
+                                        (left_num as i64 & right_num as i64) as f64,
+                                    ));
+                                }
+                            }
+                        }
+
+                        return Err(Err {
+                            message: format!(
+                                "cannot take logical & of non-integer values {}, {} [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
+
+                    _Value::Bool(left_bool) => {
+                        if let _Value::Bool(right_bool) = right_value {
+                            return Ok(_Value::Bool(left_bool && right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support bitwise or logical &, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::LogicalOrOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    // the LogicalOrOp will perform a bitwise or; `|`.
+                    _Value::Number(left_num) => {
+                        if is_intable(&left_num) {
+                            if let _Value::Number(right_num) = right_value {
+                                if is_intable(&right_num) {
+                                    return Ok(_Value::Number(
+                                        (left_num as i64 | right_num as i64) as f64,
+                                    ));
+                                }
+                            }
+                        }
+
+                        return Err(Err {
+                            message: format!(
+                                "cannot take logical | of non-integer values {}, {} [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
+
+                    _Value::Bool(left_bool) => {
+                        if let _Value::Bool(right_bool) = right_value {
+                            return Ok(_Value::Bool(left_bool || right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support bitwise or logical |, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::GreaterThanOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            return Ok(_Value::Bool(left_num > right_num));
+                        }
+                    }
+
+                    _Value::String(left_str) => {
+                        if let _Value::String(right_str) = right_value {
+                            return Ok(_Value::Bool(left_str > right_str));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            reason: ErrorReason::Runtime,
+                            message: format!(
+                                "values {} and {} do not support comparison, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            ),
+                        });
+                    }
+                }
+            }
+
+            Kind::LessThanOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    _Value::Number(left_num) => {
+                        if let _Value::Number(right_num) = right_value {
+                            return Ok(_Value::Bool(left_num < right_num));
+                        }
+                    }
+
+                    _Value::String(left_str) => {
+                        if let _Value::String(right_str) = right_value {
+                            return Ok(_Value::Bool(left_str < right_str));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            reason: ErrorReason::Runtime,
+                            message: format!(
+                                "values {} and {} do not support comparison, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            ),
+                        });
+                    }
+                }
+            }
+
+            Kind::EqualOp => {
+                let (left_value, right_value) = left_right()?;
+                return Ok(_Value::Bool(left_value.equals(right_value)));
+            }
+
+            _ => log_err(
+                &ErrorReason::Assert,
+                &format!("unknown binary operator {}", operator.string()),
+            ),
+        }
+    }
+
+    return Err(Err {
+        reason: ErrorReason::Assert,
+        message: format!("node provided is not a BinaryExprNode",),
+    });
 }
 
 // Calls into a Speak callback function synchronously.
@@ -455,8 +818,8 @@ fn parse_binary_expression(
     while ops.len() > 0 {
         tree = _Node::BinaryExpression {
             operator: ops[0].kind.clone(),
-            leftOperand: to_operand(&tree)?,
-            rightOperand: to_operand(&nodes[0])?,
+            left_operand: to_operand(&tree)?,
+            right_operand: to_operand(&nodes[0])?,
             position: ops[0].position.clone(),
         };
 
@@ -674,13 +1037,36 @@ fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {
     Ok(())
 }
 
+fn to_value(op: &Operand, stack: &mut StackFrame) -> Result<_Value, Err> {
+    match op {
+        Operand::Value(val, ..) => Ok(val.clone()),
+        Operand::Identifier(ident, ..) => {
+            if let Some(val) = stack.get(ident) {
+                return Ok(val.clone());
+            }
+            return Err(Err {
+                message: "value not found in stack".to_string(),
+                reason: ErrorReason::Runtime,
+            });
+        }
+    }
+}
+
 fn to_operand(n: &_Node) -> Result<Operand, Err> {
     match n {
-        _Node::BoolLiteral { value, .. } => Ok(Operand::Value(_Value::Bool(value.clone()))),
+        _Node::BoolLiteral { value, position } => Ok(Operand::Value(
+            _Value::Bool(value.clone()),
+            position.clone(),
+        )),
 
-        _Node::Identifier { value, .. } => Ok(Operand::Identifier(value.clone())),
+        _Node::Identifier { value, position } => {
+            Ok(Operand::Identifier(value.clone(), position.clone()))
+        }
 
-        _Node::NumberLiteral { value, .. } => Ok(Operand::Value(_Value::Number(value.clone()))),
+        _Node::NumberLiteral { value, position } => Ok(Operand::Value(
+            _Value::Number(value.clone()),
+            position.clone(),
+        )),
 
         _ => Err(Err {
             message: format!(
@@ -693,3 +1079,42 @@ fn to_operand(n: &_Node) -> Result<Operand, Err> {
         }),
     }
 }
+
+fn to_function_literal(n: &_Node) -> Result<_Node, Err> {
+    unimplemented!()
+}
+
+fn from_operand_to_identifier(op: &Operand) -> Result<String, Err> {
+    match op {
+        Operand::Identifier(ident, ..) => Ok(ident.clone()),
+        _ => Err(Err {
+            message: "assignment can only happen to an identifier".to_string(),
+            reason: ErrorReason::Syntax,
+        }),
+    }
+}
+
+fn is_intable(num: &f64) -> bool {
+    *num == num.trunc()
+}
+
+// /// extends a slice of bytes to given length.
+// fn zero_extend(s: &[u8], max: usize) -> Vec<u8> {
+//     if max <= s.len() {
+//         return s.to_vec();
+//     }
+
+//     let mut extended = vec![0; max];
+//     extended[..s.len()].copy_from_slice(s);
+//     extended
+// }
+
+// /// returns the max len of the two slices
+// fn max_len(a: &[u8], b: &[u8]) -> usize {
+//     let (a_len, b_len) = (a.len(), b.len());
+//     if a_len > b_len {
+//         a_len
+//     } else {
+//         b_len
+//     }
+// }
