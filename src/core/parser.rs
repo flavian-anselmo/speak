@@ -15,28 +15,6 @@ use std::{
     sync::mpsc::{Receiver, Sender},
 };
 
-#[derive(Debug, Clone)]
-pub enum Operand {
-    Value(_Value, Position),
-    Identifier(String, Position),
-}
-
-impl Operand {
-    fn string(&self) -> String {
-        match self {
-            Operand::Value(v, ..) => v.string(),
-            Operand::Identifier(s, ..) => s.clone(),
-        }
-    }
-
-    fn poss(&self) -> String {
-        match self {
-            Operand::Value(.., p) => p.string(),
-            Operand::Identifier(.., p) => p.string(),
-        }
-    }
-}
-
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
 #[derive(Debug, Clone)]
 pub enum _Node {
@@ -61,13 +39,13 @@ pub enum _Node {
     },
     UnaryExpression {
         operator: Kind,
-        operand: Operand,
+        operand: Box<_Node>,
         position: Position,
     },
     BinaryExpression {
         operator: Kind,
-        left_operand: Operand,
-        right_operand: Operand,
+        left_operand: Box<_Node>,
+        right_operand: Box<_Node>,
         position: Position,
     },
     FunctionCall {
@@ -76,7 +54,7 @@ pub enum _Node {
         position: Position,
     },
     FunctionLiteral {
-        arguments: Vec<(r#type::Type, _Node)>,
+        arguments: Vec<(r#type::Type, _Value)>,
         body: Box<_Node>,
         position: Position,
     },
@@ -182,59 +160,57 @@ impl _Node {
                 operand,
                 position,
             } => {
-                let mut_operand = |op: &mut Operand| -> Result<(), Err> {
+                let mut_operand = |op: &mut _Node| -> Result<_Value, Err> {
                     match op {
-                        Operand::Value(v, ..) => match v {
-                            _Value::Number(nt) => {
-                                *nt = -*nt;
-                                Ok(())
-                            }
-                            _Value::Bool(b) => {
-                                *b = !*b;
-                                Ok(())
-                            }
-                            _ => {
-                                return Err(Err {
-                                    message: format!(
-                                        "invalid unary operator {} at {}",
-                                        operator.string(),
-                                        position.string()
-                                    ),
-                                    reason: ErrorReason::Syntax,
-                                })
-                            }
-                        },
-
+                        _Node::NumberLiteral { value, .. } => {
+                            *value = -*value;
+                            Ok(_Value::Number(value.clone()))
+                        }
+                        _Node::BoolLiteral { value, .. } => {
+                            *value = !*value;
+                            Ok(_Value::Bool(value.clone()))
+                        }
                         _ => unimplemented!("should not evalute to a identifier"),
                     }
+                    // Ok(())
                 };
 
+                let cl_operand = operand.as_ref();
                 match operator {
-                    Kind::NegationOp => match operand.clone() {
-                        Operand::Value(n, ..) => {
-                            mut_operand(operand)?;
-                            Ok(n.clone())
+                    Kind::NegationOp => match cl_operand {
+                        _Node::NumberLiteral { .. } | _Node::BoolLiteral { .. } => {
+                            Ok(mut_operand(operand)?)
                         }
-                        Operand::Identifier(ident, ..) => {
-                            if let Some(val) = stack.get(&ident) {
-                                mut_operand(operand)?;
-                                return Ok(val.clone());
+
+                        _Node::Identifier { value, position } => {
+                            if let Some(val) = stack.get(value) {
+                                return Ok(mut_operand(operand)?);
                             }
                             return Err(Err {
                                 message: format!(
                                     "{} is not defined [{}]",
-                                    ident,
+                                    value,
                                     position.string()
                                 ),
                                 reason: ErrorReason::System,
                             });
+                        }
+                        _ => {
+                            return Err(Err {
+                                message: format!(
+                                    "invalid unary operand {}, at {}",
+                                    operand.string(),
+                                    position.string()
+                                ),
+                                reason: ErrorReason::Syntax,
+                            })
                         }
                     },
 
                     _ => {
                         return Err(Err {
                             message: format!(
-                                "invalid unary operator {} at {}",
+                                "invalid unary operator {}, at {}",
                                 operator.string(),
                                 position.string()
                             ),
@@ -296,12 +272,15 @@ fn eval_binary_expr_node(
 
         match operator {
             Kind::AssignOp => {
-                // left operand must be an identifier node
-                let ident = from_operand_to_identifier(left_operand)?;
-                let right_value = to_value(right_operand, stack)?;
-                stack.set(ident, right_value.clone());
-
-                return Ok(right_value);
+                match left_operand.as_ref() {
+                    _Node::Identifier { value, .. } => {
+                        // right operand node must evaluate to a value
+                        let right_value = to_value(right_operand, stack)?;
+                        stack.set(value.clone(), right_value.clone());
+                        return Ok(right_value);
+                    }
+                    _ => {}
+                }
             }
 
             Kind::AccessorOp => {
@@ -406,7 +385,7 @@ fn eval_binary_expr_node(
                                 return Err(Err {
                                     message: format!(
                                         "decision by zero error [{}]",
-                                        right_operand.poss()
+                                        right_operand.position().string()
                                     )
                                     .to_string(),
                                     reason: ErrorReason::Runtime,
@@ -440,7 +419,7 @@ fn eval_binary_expr_node(
                                 return Err(Err {
                                     message: format!(
                                         "decision by zero error in modulus [{}]",
-                                        right_operand.poss()
+                                        right_operand.position().string()
                                     )
                                     .to_string(),
                                     reason: ErrorReason::Runtime,
@@ -455,7 +434,7 @@ fn eval_binary_expr_node(
                             message: format!(
                                 "cannot take modulus of non-integer value {}, at [{}]",
                                 right_value.string(),
-                                left_operand.poss()
+                                left_operand.position().string()
                             )
                             .to_string(),
                             reason: ErrorReason::Syntax,
@@ -818,8 +797,8 @@ fn parse_binary_expression(
     while ops.len() > 0 {
         tree = _Node::BinaryExpression {
             operator: ops[0].kind.clone(),
-            left_operand: to_operand(&tree)?,
-            right_operand: to_operand(&nodes[0])?,
+            left_operand: Box::new(tree),
+            right_operand: Box::new(nodes[0].clone()),
             position: ops[0].position.clone(),
         };
 
@@ -840,7 +819,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         return Ok((
             _Node::UnaryExpression {
                 operator: tok.kind.clone(),
-                operand: to_operand(&operand)?,
+                operand: Box::new(operand),
                 position: tok.position.clone(),
             },
             consumed + 1,
@@ -1037,11 +1016,13 @@ fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {
     Ok(())
 }
 
-fn to_value(op: &Operand, stack: &mut StackFrame) -> Result<_Value, Err> {
+fn to_value(op: &_Node, stack: &mut StackFrame) -> Result<_Value, Err> {
     match op {
-        Operand::Value(val, ..) => Ok(val.clone()),
-        Operand::Identifier(ident, ..) => {
-            if let Some(val) = stack.get(ident) {
+        _Node::StringLiteral { value, .. } => Ok(_Value::String(value.clone())),
+        _Node::NumberLiteral { value, .. } => Ok(_Value::Number(value.clone())),
+        _Node::BoolLiteral { value, .. } => Ok(_Value::Bool(value.clone())),
+        _Node::Identifier { value, .. } => {
+            if let Some(val) = stack.get(value) {
                 return Ok(val.clone());
             }
             return Err(Err {
@@ -1049,50 +1030,55 @@ fn to_value(op: &Operand, stack: &mut StackFrame) -> Result<_Value, Err> {
                 reason: ErrorReason::Runtime,
             });
         }
-    }
-}
-
-fn to_operand(n: &_Node) -> Result<Operand, Err> {
-    match n {
-        _Node::BoolLiteral { value, position } => Ok(Operand::Value(
-            _Value::Bool(value.clone()),
-            position.clone(),
-        )),
-
-        _Node::Identifier { value, position } => {
-            Ok(Operand::Identifier(value.clone(), position.clone()))
-        }
-
-        _Node::NumberLiteral { value, position } => Ok(Operand::Value(
-            _Value::Number(value.clone()),
-            position.clone(),
-        )),
-
-        _ => Err(Err {
-            message: format!(
-                "the node, {} at {}, is not an operand",
-                n.string(),
-                n.position().string()
-            )
-            .to_string(),
-            reason: ErrorReason::Syntax,
+        _Node::EmptyIdentifier { .. } => Err(Err {
+            message: format!("cannot assign an empty identifier a value"),
+            reason: ErrorReason::Runtime,
         }),
+        _ => todo!(),
     }
 }
+
+// fn to_operand(n: &_Node) -> Result<Operand, Err> {
+//     match n {
+//         _Node::BoolLiteral { value, position } => Ok(Operand::Value(
+//             _Value::Bool(value.clone()),
+//             position.clone(),
+//         )),
+
+//         _Node::Identifier { value, position } => {
+//             Ok(Operand::Identifier(value.clone(), position.clone()))
+//         }
+
+//         _Node::NumberLiteral { value, position } => Ok(Operand::Value(
+//             _Value::Number(value.clone()),
+//             position.clone(),
+//         )),
+
+//         _ => Err(Err {
+//             message: format!(
+//                 "the node, {} at {}, is not an operand",
+//                 n.string(),
+//                 n.position().string()
+//             )
+//             .to_string(),
+//             reason: ErrorReason::Syntax,
+//         }),
+//     }
+// }
 
 fn to_function_literal(n: &_Node) -> Result<_Node, Err> {
     unimplemented!()
 }
 
-fn from_operand_to_identifier(op: &Operand) -> Result<String, Err> {
-    match op {
-        Operand::Identifier(ident, ..) => Ok(ident.clone()),
-        _ => Err(Err {
-            message: "assignment can only happen to an identifier".to_string(),
-            reason: ErrorReason::Syntax,
-        }),
-    }
-}
+// fn from_operand_to_identifier(op: &Operand) -> Result<String, Err> {
+//     match op {
+//         Operand::Identifier(ident, ..) => Ok(ident.clone()),
+//         _ => Err(Err {
+//             message: "assignment can only happen to an identifier".to_string(),
+//             reason: ErrorReason::Syntax,
+//         }),
+//     }
+// }
 
 fn is_intable(num: &f64) -> bool {
     *num == num.trunc()
