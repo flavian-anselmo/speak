@@ -1038,69 +1038,10 @@ fn to_value(op: &_Node, stack: &mut StackFrame) -> Result<_Value, Err> {
     }
 }
 
-// fn to_operand(n: &_Node) -> Result<Operand, Err> {
-//     match n {
-//         _Node::BoolLiteral { value, position } => Ok(Operand::Value(
-//             _Value::Bool(value.clone()),
-//             position.clone(),
-//         )),
-
-//         _Node::Identifier { value, position } => {
-//             Ok(Operand::Identifier(value.clone(), position.clone()))
-//         }
-
-//         _Node::NumberLiteral { value, position } => Ok(Operand::Value(
-//             _Value::Number(value.clone()),
-//             position.clone(),
-//         )),
-
-//         _ => Err(Err {
-//             message: format!(
-//                 "the node, {} at {}, is not an operand",
-//                 n.string(),
-//                 n.position().string()
-//             )
-//             .to_string(),
-//             reason: ErrorReason::Syntax,
-//         }),
-//     }
-// }
-
 fn to_function_literal(n: &_Node) -> Result<_Node, Err> {
     unimplemented!()
 }
 
-// fn from_operand_to_identifier(op: &Operand) -> Result<String, Err> {
-//     match op {
-//         Operand::Identifier(ident, ..) => Ok(ident.clone()),
-//         _ => Err(Err {
-//             message: "assignment can only happen to an identifier".to_string(),
-//             reason: ErrorReason::Syntax,
-//         }),
-//     }
-// }
-
 fn is_intable(num: &f64) -> bool {
     *num == num.trunc()
 }
-
-// /// extends a slice of bytes to given length.
-// fn zero_extend(s: &[u8], max: usize) -> Vec<u8> {
-//     if max <= s.len() {
-//         return s.to_vec();
-//     }
-
-//     let mut extended = vec![0; max];
-//     extended[..s.len()].copy_from_slice(s);
-//     extended
-// }
-
-// /// returns the max len of the two slices
-// fn max_len(a: &[u8], b: &[u8]) -> usize {
-//     let (a_len, b_len) = (a.len(), b.len());
-//     if a_len > b_len {
-//         a_len
-//     } else {
-//         b_len
-//     }
-// }
