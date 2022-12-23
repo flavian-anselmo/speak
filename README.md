@@ -4,4 +4,4 @@ This language is directly inspired by Linus Lee's work on his language [ink](git
 
 Examples on how its intended to look like can be found in the samples directory.
 
-So far, it's experimental and there's a bad code all over and a lot of cloning which will be addressed.
+So far, it's experimental and there's ugly code all over the place and a lot of cloning which will be addressed in follow up commits. It's still a work in progress.
