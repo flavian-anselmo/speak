@@ -279,7 +279,27 @@ fn eval_binary_expr_node(
                         stack.set(value.clone(), right_value.clone());
                         return Ok(right_value);
                     }
-                    _ => {}
+
+                    _Node::BinaryExpression {
+                        operator: l_operator,
+                        left_operand: l_left_operand,
+                        right_operand: l_right_operand,
+                        position: l_position,
+                    } => {
+                        unimplemented!() // method access
+                    }
+
+                    _ => {
+                        let mut left_operand = left_operand.as_ref().clone();
+                        return Err(Err {
+                            message: format!(
+                                "cannot assing value to non-identifier {}, at [{}]",
+                                left_operand.eval(stack, false)?.string(),
+                                left_operand.position().string()
+                            ),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
                 }
             }
 
@@ -621,7 +641,26 @@ fn eval_speak_function<'a>(
     allow_thunk: bool,
     args: &[_Value],
 ) -> Result<_Value, Err> {
-    unimplemented!() // TODO: implement
+    match fn_value {
+        _Value::Function(func) => {
+            unimplemented!()
+        }
+
+        _Value::NativeFunction(func) => {
+
+            
+
+            unimplemented!()
+        }
+
+        _ => Err(Err {
+            message: format!(
+                "attempted to call a non-function value {}",
+                fn_value.string()
+            ),
+            reason: ErrorReason::Runtime,
+        }),
+    }
 }
 
 /// Parses a stream of tokens into AST [`_Node`]s.
@@ -904,12 +943,13 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         }
     }
 
-    // if previous token is identifier and next token is identifier, then this is a function call
+    // if previous token is identifier and next token is identifier all in one line, then this is a function call
     while idx < tokens.len()
         && tokens[idx - 1].kind == Kind::Identifier
         && tokens[idx].kind == Kind::Identifier
+        && tokens[idx - 1].position.line == tokens[idx].position.line
     {
-        let (_atom, consumed) = parse_function_call(atom, &tokens[idx..])?;
+        let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..])?;
 
         idx += consumed;
         atom = _atom;
@@ -931,13 +971,31 @@ fn parse_if_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
     unimplemented!("parse_if_body")
 }
 
-fn parse_function_call(func: _Node, tokens: &[Tok]) -> Result<(_Node, usize), Err> {
-    let idx = 1;
+fn parse_function_call(func: &_Node, tokens: &[Tok]) -> Result<(_Node, usize), Err> {
+    let mut idx = 1;
     guard_unexpected_input_end(tokens, idx)?;
 
-    //   let mut args: Vec<_Node> = Vec::new();
+    // args should be on the same line, or be ')'
+    let mut args = Vec::new();
+    while func.position().line == tokens[idx].position.line || tokens[idx].kind != Kind::RightParen
+    {
+        let (expr, consumed) = parse_expression(&tokens[idx..])?;
 
-    unimplemented!()
+        idx += consumed;
+        args.push(expr);
+
+        guard_unexpected_input_end(&tokens, idx)?;
+    }
+
+    idx += 1;
+    Ok((
+        _Node::FunctionCall {
+            function: Box::new(func.clone()),
+            arguments: args,
+            position: func.position().clone(),
+        },
+        idx,
+    ))
 }
 
 fn parse_function_literal(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
@@ -1034,7 +1092,13 @@ fn to_value(op: &_Node, stack: &mut StackFrame) -> Result<_Value, Err> {
             message: format!("cannot assign an empty identifier a value"),
             reason: ErrorReason::Runtime,
         }),
-        _ => todo!(),
+        _Node::FunctionLiteral { .. } => Ok(_Value::Function(Function {
+            defn: Box::new(op.clone()),
+        })),
+        _ => Err(Err {
+            message: "cannot resolve to concrete value of node provided".to_string(),
+            reason: ErrorReason::System,
+        }),
     }
 }
 
@@ -1044,4 +1108,11 @@ fn to_function_literal(n: &_Node) -> Result<_Node, Err> {
 
 fn is_intable(num: &f64) -> bool {
     *num == num.trunc()
+}
+
+#[cfg(test)]
+mod test {
+    // "Hello World example"
+    #[test]
+    fn hello_world() {}
 }

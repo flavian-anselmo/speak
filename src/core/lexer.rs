@@ -115,8 +115,8 @@ pub struct FnBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Position {
-    line: usize,
-    column: usize,
+    pub line: usize,
+    pub column: usize,
 }
 
 impl Position {

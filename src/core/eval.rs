@@ -74,7 +74,7 @@ pub mod value {
     use crate::core::{error::Err, parser::_Node};
     use std::fmt::{self, Debug};
 
-    use super::{r#type::Type, Context, VTable, MAX_PRINT_LEN};
+    use super::{r#type::Type, Context, NativeFn, VTable, MAX_PRINT_LEN};
 
     /// Value represents any value in the Speak programming language.
     /// Each value corresponds to some primitive or object value created
@@ -88,6 +88,10 @@ pub mod value {
         /// This is the value of any variables referencing functions
         /// defined in a Speak program.
         Function(Function),
+
+        /// This is a function whose implementation is written in rust and
+        /// is part of the interpreter.
+        NativeFunction(NativeFn),
 
         /// This is an internal representation of a lazy
         /// function evaluation used to implement tail call optimization.
@@ -123,7 +127,9 @@ pub mod value {
                 _Value::Number(_) => Type::Number,
                 _Value::Bool(_) => Type::Bool,
                 _Value::String(_) => Type::String,
-                _Value::Function { .. } | _Value::FunctionCallThunk { .. } => Type::Function,
+                _Value::Function { .. }
+                | _Value::FunctionCallThunk { .. }
+                | _Value::NativeFunction(..) => Type::Function,
                 _Value::Empty => Type::Empty,
             }
         }
@@ -144,6 +150,7 @@ pub mod value {
                 _Value::Bool(value) => value.to_string(),
                 _Value::String(value) => value.to_string(),
                 _Value::Function(func) => func.string(),
+                _Value::NativeFunction(func) => format!("Native Function ({})", func.0),
                 _Value::FunctionCallThunk { func, .. } => {
                     format!("Thunk of ({})", func.string())
                 }
@@ -153,28 +160,40 @@ pub mod value {
     }
 }
 
+#[derive(Clone)]
 pub struct NativeFunction<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>>(String, F);
+type NativeFn = NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>;
 
-impl<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>> fmt::Debug for NativeFunction<F> {
+impl fmt::Debug for NativeFn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "NativeFunction {{ name: {} }}", self.0)
     }
 }
 
-type NativeFn = NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>;
+/// This loads up the built-in functions which come with the interpreter.
+pub fn load_func(stack: &mut StackFrame) {
+    if let StackFrame::Frame { item, next: _ } = stack {
+        item.set(
+            "println".to_string(),
+            _Value::NativeFunction(NativeFunction("println".to_string(), speak_println)),
+        );
+        item.set(
+            "sprint".to_string(),
+            _Value::NativeFunction(NativeFunction("sprint".to_string(), speak_sprint)),
+        );
+        item.set(
+            "sprintf".to_string(),
+            _Value::NativeFunction(NativeFunction("println".to_string(), speak_sprintf)),
+        );
+        item.set(
+            "len".to_string(),
+            _Value::NativeFunction(NativeFunction("len".to_string(), speak_len)),
+        );
 
-pub fn load_func() -> HashMap<String, NativeFn> {
-    let r#println: NativeFn = NativeFunction("println".to_string(), speak_println);
-    let r#sprint: NativeFn = NativeFunction("sprint".to_string(), speak_sprint);
-    let r#sprintf: NativeFn = NativeFunction("sprintf".to_string(), speak_sprintf);
-    let r#len: NativeFn = NativeFunction("len".to_string(), speak_len);
+        return; //Ok(());
+    }
 
-    HashMap::from([
-        ("println".to_string(), r#println),
-        ("sprint".to_string(), r#sprint),
-        ("sprintf".to_string(), r#sprintf),
-        ("len".to_string(), r#len),
-    ])
+    log_err(&ErrorReason::Assert, "Stackframe provided is Nil")
 }
 
 /// This is a global execution context for the lifetime of the Speak program.
@@ -184,8 +203,8 @@ pub struct Engine {
     pub debug_lex: bool,
     pub debug_parse: bool,
     pub debug_dump: bool,
-    pub native_functions:
-        HashMap<String, NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>>,
+    // pub native_functions:
+    //     HashMap<String, NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>>,
 }
 
 impl Default for Engine {
@@ -195,7 +214,7 @@ impl Default for Engine {
             debug_lex: false,
             debug_parse: true,
             debug_dump: false,
-            native_functions: load_func(),
+            // native_functions: load_func(),
         }
     }
 }
@@ -238,8 +257,14 @@ impl StackFrame {
 
     /// Get a value from the current stack frame chain.
     pub fn get(&self, name: &str) -> Option<&_Value> {
-        if let StackFrame::Frame { item, next: _ } = self {
-            return item.get(name);
+        let mut frame = self;
+        while let StackFrame::Frame { item, next } = frame {
+            match item.get(name) {
+                Some(val) => return Some(val),
+                None => {
+                    frame = next;
+                }
+            }
         }
 
         return None;
@@ -254,10 +279,26 @@ impl StackFrame {
 
     /// Updates a value in the stack frame chain.
     fn up(&mut self, name: String, val: _Value) {
-        if let StackFrame::Frame { item, next: _ } = self {
-            let l = &mut item.0;
-            l.insert(name, val);
+        let mut frame = self;
+        while let StackFrame::Frame { item, next } = frame {
+            match item.get(&name) {
+                Some(_) => {
+                    item.0.insert(name, val);
+                    return;
+                }
+                None => {
+                    frame = next;
+                }
+            }
         }
+
+        log_err(
+            &ErrorReason::Assert,
+            &format!(
+                "StackFrame.up expected to find variable '{}' in frame but did not",
+                name
+            ),
+        );
     }
 
     /// Provides the vtable to the function provided for mutation.
@@ -302,13 +343,24 @@ pub struct Context {
     cwd: Option<String>,
     /// The currently executing file's path, if any
     file: Option<String>,
-
-    //   engine: &'a Engine,
     /// Frame represents the Context's global heap
     frame: StackFrame,
 }
 
 impl Context {
+    fn new() -> Self {
+        let mut frame = StackFrame::new(VTable(HashMap::new()), StackFrame::Nil);
+
+        // load builtin-functions
+        load_func(&mut frame);
+
+        Context {
+            cwd: None,
+            file: None,
+            frame,
+        }
+    }
+
     fn reset_wd(&mut self) {
         self.cwd = Some(env::current_dir().unwrap().to_str().unwrap().to_string());
     }
@@ -402,11 +454,16 @@ mod tests {
             .expect("key must be present")
             .equals(_Value::String("mutated value".to_string())));
 
-        //test stackframe.get, in parent frame
+        // test stackframe.get, in parent frame
         let frame = StackFrame::Frame {
             item: VTable::new(HashMap::new()),
             next: Box::new(frame),
         };
-        assert!(frame.get("a").is_none())
+        assert!(frame.get("a").is_some());
+        assert!(frame.get("b").is_none());
+
+        // ensure that built-in function println is present on context creation
+        let ctx = Context::new();
+        assert!(ctx.frame.get("println").is_some())
     }
 }
