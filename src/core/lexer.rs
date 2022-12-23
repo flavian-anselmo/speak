@@ -57,8 +57,8 @@ pub enum Kind {
 
     LeftParen,
     RightParen,
-    LeftBracket,
-    RightBracket,
+    // LeftBracket,
+    // RightBracket,
 }
 
 impl Kind {
@@ -103,14 +103,10 @@ impl Kind {
 
             Kind::LeftParen => "'('".to_string(),
             Kind::RightParen => "')'".to_string(),
-            Kind::LeftBracket => "'['".to_string(),
-            Kind::RightBracket => "']'".to_string(),
+            // Kind::LeftBracket => "'['".to_string(),
+            // Kind::RightBracket => "']'".to_string(),
         }
     }
-}
-
-pub struct FnBody {
-    pub body: Vec<Kind>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -184,7 +180,7 @@ pub fn tokenize(
 
         // if starts with an identation, log the identation to the token stream
         let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
-        let mut count = 0;
+        //let mut count = 0;
 
         //   let mut comment = false;
         let mut entry = String::new();
@@ -338,6 +334,9 @@ pub fn tokenize(
                 '~' => {
                     token_commit(Kind::NegationOp)?;
                 }
+                '-' => {
+                    token_commit(Kind::SubtractOp)?;
+                }
                 '+' => {
                     token_commit(Kind::AddOp)?;
                 }
@@ -458,6 +457,8 @@ fn commit_arbitrary(
         "==" => commit_token(Kind::EqualOp),
 
         "if" => commit_token(Kind::If),
+
+        "is" => commit_token(Kind::AssignOp),
 
         _ => {
             // check if entry string is numerical

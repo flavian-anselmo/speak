@@ -1,9 +1,32 @@
 use super::{
     error::{Err, ErrorReason},
-    eval::{value::_Value, Context},
+    eval::{value::_Value, StackFrame},
 };
 
-pub fn speak_println(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
+pub fn speak_mod(/*TODO: ctx: &mut Context*/
+) -> fn(&mut StackFrame, &[_Value]) -> Result<_Value, Err> {
+    |_stack: &mut StackFrame, inputs: &[_Value]| -> Result<_Value, Err> {
+        for i in inputs {
+            match i {
+                _Value::String(_path) => {
+                    // TODO: load data to stack
+                    unimplemented!()
+                }
+                _ => {
+                    return Err(Err {
+                        message: "mod arguements must be string literals".to_string(),
+                        reason: ErrorReason::Runtime,
+                    });
+                }
+            }
+        }
+
+        Ok(_Value::Empty)
+    }
+}
+
+// pub fn speak_println(ctx: &mut Context) -> Box<dyn Fn(&[_Value]) -> Result<_Value, Err>>
+pub fn speak_println(_: &mut StackFrame, input: &[_Value]) -> Result<_Value, Err> {
     println!(
         "{}",
         input.iter().fold(String::new(), |acc, x| acc + &x.string())
@@ -12,11 +35,11 @@ pub fn speak_println(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
     Ok(_Value::Empty)
 }
 
-pub fn speak_sprint(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
+pub fn speak_sprint(_: &mut StackFrame, input: &[_Value]) -> Result<_Value, Err> {
     Ok(_Value::String(input[0].string()))
 }
 
-pub fn speak_sprintf(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
+pub fn speak_sprintf(_: &mut StackFrame, input: &[_Value]) -> Result<_Value, Err> {
     if input.len() <= 1 {
         return Err(Err {
             reason: ErrorReason::Runtime,
@@ -39,7 +62,7 @@ pub fn speak_sprintf(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
     ))
 }
 
-pub fn speak_len(_: &Context, input: &[_Value]) -> Result<_Value, Err> {
+pub fn speak_len(_: &mut StackFrame, input: &[_Value]) -> Result<_Value, Err> {
     if input.len() != 1 {
         return Err(Err {
             reason: super::error::ErrorReason::Runtime,

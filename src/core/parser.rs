@@ -4,13 +4,15 @@ use super::{
     error::{Err, ErrorReason},
     eval::StackFrame,
     eval::{
-        r#type::{self, Type},
+        r#type,
         value::{Function, _Value},
+        VTable,
     },
     lexer::{Kind, Position, Tok},
     log::{log_err, log_safe_err},
 };
 use std::{
+    collections::HashMap,
     fmt::Debug,
     sync::mpsc::{Receiver, Sender},
 };
@@ -54,16 +56,15 @@ pub enum _Node {
         position: Position,
     },
     FunctionLiteral {
-        arguments: Vec<(r#type::Type, _Value)>,
+        arguments: Vec<(String, r#type::Type)>, // (identifier, type)
         body: Box<_Node>,
         position: Position,
     },
-
-    IfExprNode {
-        condition: Box<_Node>,
-        clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
-        position: Position,
-    },
+    // IfExprNode {
+    //     condition: Box<_Node>,
+    //     clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
+    //     position: Position,
+    // },
 }
 
 impl _Node {
@@ -79,14 +80,14 @@ impl _Node {
             } => format!("Unary {} ({})", operator.string(), operand.string()),
             _Node::BinaryExpression {
                 operator,
-                left_operand: leftOperand,
-                right_operand: rightOperand,
+                left_operand,
+                right_operand,
                 ..
             } => format!(
                 "Binary {} ({}, {})",
                 operator.string(),
-                leftOperand.string(),
-                rightOperand.string()
+                left_operand.string(),
+                right_operand.string()
             ),
             _Node::FunctionCall {
                 function,
@@ -109,19 +110,18 @@ impl _Node {
                 .fold(format!("Function ({}):", position.string()), |acc, arg| {
                     format!("{}, {}", acc, arg.1.string())
                 }),
-
-            _Node::IfExprNode {
-                condition, clauses, ..
-            } => {
-                let mut s = format!("If ({})", condition.string());
-                if let Some(true_clause) = &clauses.0 {
-                    s.push_str(&format!("? ({})", true_clause.string()));
-                }
-                if let Some(false_clause) = &clauses.1 {
-                    s.push_str(&format!("! ({})", false_clause.string()));
-                }
-                s
-            }
+            // _Node::IfExprNode {
+            //     condition, clauses, ..
+            // } => {
+            //     let mut s = format!("If ({})", condition.string());
+            //     if let Some(true_clause) = &clauses.0 {
+            //         s.push_str(&format!("? ({})", true_clause.string()));
+            //     }
+            //     if let Some(false_clause) = &clauses.1 {
+            //         s.push_str(&format!("! ({})", false_clause.string()));
+            //     }
+            //     s
+            // }
         }
     }
 
@@ -136,7 +136,7 @@ impl _Node {
             _Node::BinaryExpression { position, .. } => position,
             _Node::FunctionCall { position, .. } => position,
             _Node::FunctionLiteral { position, .. } => position,
-            _Node::IfExprNode { position, .. } => position,
+            // _Node::IfExprNode { position, .. } => position,
         }
     }
 
@@ -183,7 +183,7 @@ impl _Node {
                         }
 
                         _Node::Identifier { value, position } => {
-                            if let Some(val) = stack.get(value) {
+                            if let Some(_val) = stack.get(value) {
                                 return Ok(mut_operand(operand)?);
                             }
                             return Err(Err {
@@ -223,30 +223,22 @@ impl _Node {
             _Node::FunctionCall {
                 function,
                 arguments,
-                position,
+                ..
             } => {
                 let mut arg_results = Vec::new();
                 for arg in arguments {
                     arg_results.push(arg.eval(stack, false)?);
                 }
 
-                eval_speak_function(&function.eval(stack, false)?, allow_thunk, &arg_results)
+                let fn_value = &function.eval(stack, false)?;
+                eval_speak_function(stack, fn_value, allow_thunk, &arg_results)
             }
-            _Node::FunctionLiteral {
-                arguments,
-                body,
-                position,
-            } => Ok(_Value::Function(Function {
+            _Node::FunctionLiteral { .. } => Ok(_Value::Function(Function {
                 defn: Box::new(self.clone()),
             })),
-
-            _Node::IfExprNode {
-                condition,
-                clauses,
-                position,
-            } => {
-                unimplemented!()
-            }
+            // _Node::IfExprNode { .. } => {
+            //     unimplemented!()
+            // }
         }
     }
 }
@@ -254,7 +246,7 @@ impl _Node {
 fn eval_binary_expr_node(
     node: &_Node,
     stack: &mut StackFrame,
-    allow_thunk: &bool,
+    _allow_thunk: &bool,
 ) -> Result<_Value, Err> {
     if let _Node::BinaryExpression {
         operator,
@@ -281,10 +273,10 @@ fn eval_binary_expr_node(
                     }
 
                     _Node::BinaryExpression {
-                        operator: l_operator,
-                        left_operand: l_left_operand,
-                        right_operand: l_right_operand,
-                        position: l_position,
+                        operator: _l_operator,
+                        left_operand: _l_left_operand,
+                        right_operand: _l_right_operand,
+                        position: _l_position,
                     } => {
                         unimplemented!() // method access
                     }
@@ -636,22 +628,49 @@ fn eval_binary_expr_node(
 }
 
 // Calls into a Speak callback function synchronously.
-fn eval_speak_function<'a>(
+fn eval_speak_function(
+    stack: &mut StackFrame,
     fn_value: &_Value,
     allow_thunk: bool,
     args: &[_Value],
 ) -> Result<_Value, Err> {
     match fn_value {
         _Value::Function(func) => {
-            unimplemented!()
+            let mut arg_vtable = HashMap::new();
+            if let _Node::FunctionLiteral { arguments, .. } = func.defn.as_ref() {
+                for (i, (arg_ident, arg_type)) in arguments.iter().enumerate() {
+                    if i < args.len() {
+                        // assert the arg value types match
+                        if args[i].value_type() != *arg_type {
+                            return Err(Err {
+                                message: format!(""),
+                                reason: ErrorReason::Runtime,
+                            });
+                        }
+
+                        arg_vtable.insert(arg_ident.clone(), args[i].clone());
+                    }
+                }
+
+                let mut return_thunk = _Value::FunctionCallThunk {
+                    vt: VTable(arg_vtable),
+                    func: func.clone(),
+                };
+
+                if allow_thunk {
+                    return Ok(return_thunk);
+                }
+                return unwrap_thunk(stack, &mut return_thunk);
+            }
+
+            Err(Err {
+                message: "".to_string(),
+                reason: ErrorReason::System,
+            })
         }
 
-        _Value::NativeFunction(func) => {
-
-            
-
-            unimplemented!()
-        }
+        // stack is used in the mod function only to load mod _Values.
+        _Value::NativeFunction(func) => func.1(stack, args),
 
         _ => Err(Err {
             message: format!(
@@ -661,6 +680,26 @@ fn eval_speak_function<'a>(
             reason: ErrorReason::Runtime,
         }),
     }
+}
+
+fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut _Value) -> Result<_Value, Err> {
+    let mut is_thunk = true;
+    let mut v = _Value::Empty;
+    while is_thunk {
+        if let _Value::FunctionCallThunk { func, .. } = thunk {
+            // get the function body and eval
+            if let _Node::FunctionLiteral { body, .. } = func.defn.as_mut() {
+                v = body.eval(stack, true)?;
+                if let _Value::FunctionCallThunk { .. } = v {
+                    is_thunk = true
+                } else {
+                    is_thunk = false
+                }
+            }
+        }
+    }
+
+    Ok(v)
 }
 
 /// Parses a stream of tokens into AST [`_Node`]s.
@@ -715,7 +754,7 @@ fn get_op_priority(t: &Tok) -> i8 {
     }
 }
 
-fn isBinaryOp(t: &Tok) -> bool {
+fn is_binary_op(t: &Tok) -> bool {
     match t.kind {
         Kind::AccessorOp
         | Kind::ModulusOp
@@ -734,11 +773,11 @@ fn isBinaryOp(t: &Tok) -> bool {
 fn parse_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
     let mut idx = 0;
 
-    let consume_dangling_separator = || {
-        if idx < tokens.len() && tokens[idx].kind == Kind::Separator {
-            idx += 1;
-        }
-    };
+    // let consume_dangling_separator = || {
+    //     if idx < tokens.len() && tokens[idx].kind == Kind::Separator {
+    //         idx += 1;
+    //     }
+    // };
 
     let (atom, consumed) = parse_atom(&tokens[idx..])?;
     idx += consumed;
@@ -797,7 +836,7 @@ fn parse_binary_expression(
 
     // build up a list of binary operations, with tree nodes
     // where there are higher-precedence operations
-    while tokens.len() > idx && isBinaryOp(&tokens[idx]) {
+    while tokens.len() > idx && is_binary_op(&tokens[idx]) {
         if previous_priority >= get_op_priority(&tokens[idx]) {
             // Priority is lower than the previous op, so we're done
             break;
@@ -960,7 +999,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
 }
 
 fn parse_if_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
-    let (tok, mut idx) = (&tokens[0], 1);
+    let (_tok, mut idx) = (&tokens[0], 1);
     // if n % 2 == 0 ? = n / 2 ! = 3 * n + 1
 
     // check either for first occurence of ? or !, whichever comes first
@@ -1074,7 +1113,7 @@ fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {
     Ok(())
 }
 
-fn to_value(op: &_Node, stack: &mut StackFrame) -> Result<_Value, Err> {
+fn to_value<'a>(op: &_Node, stack: &'a mut StackFrame) -> Result<_Value, Err> {
     match op {
         _Node::StringLiteral { value, .. } => Ok(_Value::String(value.clone())),
         _Node::NumberLiteral { value, .. } => Ok(_Value::Number(value.clone())),
@@ -1100,10 +1139,6 @@ fn to_value(op: &_Node, stack: &mut StackFrame) -> Result<_Value, Err> {
             reason: ErrorReason::System,
         }),
     }
-}
-
-fn to_function_literal(n: &_Node) -> Result<_Node, Err> {
-    unimplemented!()
 }
 
 fn is_intable(num: &f64) -> bool {

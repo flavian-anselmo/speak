@@ -1,51 +1,46 @@
 use self::value::_Value;
-
 use super::{
     error::{Err, ErrorReason},
     lexer::{tokenize, Tok},
     log::{log_debug, log_err},
     parser::{_Node, parse},
-    runtime::{speak_len, speak_println, speak_sprint, speak_sprintf},
+    runtime,
 };
-use std::{
-    collections::HashMap,
-    env, fmt,
-    fs::{self, File},
-    io::{BufReader, Bytes},
-    sync::mpsc::channel,
-};
+use std::{collections::HashMap, env, fmt, fs, io::BufReader, sync::mpsc::channel};
 
 const MAX_PRINT_LEN: usize = 120;
 
 pub mod r#type {
     #[derive(Debug, PartialEq, Eq, Clone)]
     pub enum Type {
-        // Floating point number: f64
+        /// Floating point number: f64
         Number,
 
-        // Boolean type.
+        /// Boolean type.
         Bool,
 
-        // String type.
+        /// String type.
         String,
 
         // Array type.
-        Array { r#type: Box<Type> },
+        // Array {
+        //     r#type: Box<Type>,
+        // },
 
         // Map type.
-        Map,
+        //Map,
 
         // Function type.
         Function,
 
-        // Interface type.
-        Interface,
+        // // Interface type.
+        // Interface,
 
-        // Struct type.
-        Struct,
+        // // Struct type.
+        // Struct,
 
-        // Enum type.
-        Enum,
+        // // Enum type.
+        // Enum,
 
         // Empty type.
         Empty,
@@ -58,12 +53,12 @@ pub mod r#type {
                 Type::Number => "number".to_string(),
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
-                Type::Array { r#type } => format!("[]{}", r#type.string()),
-                Type::Map => "map".to_string(),
+                // Type::Array { r#type } => format!("[]{}", r#type.string()),
+                // Type::Map => "map".to_string(),
                 Type::Function => "function".to_string(),
-                Type::Interface => "interface".to_string(),
-                Type::Struct => "struct".to_string(),
-                Type::Enum => "enum".to_string(),
+                // Type::Interface => "interface".to_string(),
+                // Type::Struct => "struct".to_string(),
+                // Type::Enum => "enum".to_string(),
                 Type::Empty => "empty".to_string(),
             }
         }
@@ -71,10 +66,10 @@ pub mod r#type {
 }
 
 pub mod value {
-    use crate::core::{error::Err, parser::_Node};
-    use std::fmt::{self, Debug};
+    use crate::core::parser::_Node;
+    use std::fmt::Debug;
 
-    use super::{r#type::Type, Context, NativeFn, VTable, MAX_PRINT_LEN};
+    use super::{r#type::Type, NativeFn, VTable, MAX_PRINT_LEN};
 
     /// Value represents any value in the Speak programming language.
     /// Each value corresponds to some primitive or object value created
@@ -107,7 +102,6 @@ pub mod value {
     pub struct Function {
         // defn must be of variant `FunctionLiteral`.
         pub defn: Box<_Node>,
-        // pub parent_frame: Rc<RefCell<StackFrame>>, TODO: implement this
     }
 
     impl Function {
@@ -161,8 +155,8 @@ pub mod value {
 }
 
 #[derive(Clone)]
-pub struct NativeFunction<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>>(String, F);
-type NativeFn = NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>;
+pub struct NativeFunction<F: Fn(&mut StackFrame, &[_Value]) -> Result<_Value, Err>>(String, pub F);
+type NativeFn = NativeFunction<fn(&mut StackFrame, &[_Value]) -> Result<_Value, Err>>;
 
 impl fmt::Debug for NativeFn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -171,26 +165,37 @@ impl fmt::Debug for NativeFn {
 }
 
 /// This loads up the built-in functions which come with the interpreter.
-pub fn load_func(stack: &mut StackFrame) {
-    if let StackFrame::Frame { item, next: _ } = stack {
+pub fn load_runtime(ctx: &mut Context) {
+    if let StackFrame::Frame { item, next: _ } = &mut ctx.frame {
         item.set(
             "println".to_string(),
-            _Value::NativeFunction(NativeFunction("println".to_string(), speak_println)),
+            _Value::NativeFunction(NativeFunction(
+                "println".to_string(),
+                runtime::speak_println,
+            )),
         );
         item.set(
             "sprint".to_string(),
-            _Value::NativeFunction(NativeFunction("sprint".to_string(), speak_sprint)),
+            _Value::NativeFunction(NativeFunction("sprint".to_string(), runtime::speak_sprint)),
         );
         item.set(
             "sprintf".to_string(),
-            _Value::NativeFunction(NativeFunction("println".to_string(), speak_sprintf)),
+            _Value::NativeFunction(NativeFunction(
+                "println".to_string(),
+                runtime::speak_sprintf,
+            )),
         );
         item.set(
             "len".to_string(),
-            _Value::NativeFunction(NativeFunction("len".to_string(), speak_len)),
+            _Value::NativeFunction(NativeFunction("len".to_string(), runtime::speak_len)),
         );
 
-        return; //Ok(());
+        item.set(
+            "mod".to_string(),
+            _Value::NativeFunction(NativeFunction("mod".to_string(), runtime::speak_mod())),
+        );
+
+        return;
     }
 
     log_err(&ErrorReason::Assert, "Stackframe provided is Nil")
@@ -203,8 +208,6 @@ pub struct Engine {
     pub debug_lex: bool,
     pub debug_parse: bool,
     pub debug_dump: bool,
-    // pub native_functions:
-    //     HashMap<String, NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>>,
 }
 
 impl Default for Engine {
@@ -214,7 +217,6 @@ impl Default for Engine {
             debug_lex: false,
             debug_parse: true,
             debug_dump: false,
-            // native_functions: load_func(),
         }
     }
 }
@@ -222,13 +224,9 @@ impl Default for Engine {
 /// ValueTable is used anytime a map of names/labels to Speak Values is needed,
 /// and is notably used to represent stack frames/heaps and CompositeValue dictionaries.
 #[derive(Debug, Clone)]
-pub struct VTable(HashMap<String, _Value>);
+pub struct VTable(pub HashMap<String, _Value>);
 
 impl VTable {
-    fn new(map: HashMap<String, _Value>) -> Self {
-        Self(map)
-    }
-
     fn get(&self, name: &str) -> Option<&_Value> {
         self.0.get(name)
     }
@@ -248,7 +246,7 @@ pub enum StackFrame {
 
 impl StackFrame {
     /// Creates a new stack frame with the provided value table and parent stack frame.
-    fn new(value_table: VTable, parent: StackFrame) -> Self {
+    pub fn new(value_table: VTable, parent: StackFrame) -> Self {
         Self::Frame {
             item: value_table,
             next: Box::new(parent),
@@ -278,39 +276,28 @@ impl StackFrame {
     }
 
     /// Updates a value in the stack frame chain.
-    fn up(&mut self, name: String, val: _Value) {
-        let mut frame = self;
-        while let StackFrame::Frame { item, next } = frame {
-            match item.get(&name) {
-                Some(_) => {
-                    item.0.insert(name, val);
-                    return;
-                }
-                None => {
-                    frame = next;
-                }
-            }
-        }
+    // fn up(&mut self, name: String, val: _Value) {
+    //     let mut frame = self;
+    //     while let StackFrame::Frame { item, next } = frame {
+    //         match item.get(&name) {
+    //             Some(_) => {
+    //                 item.0.insert(name, val);
+    //                 return;
+    //             }
+    //             None => {
+    //                 frame = next;
+    //             }
+    //         }
+    //     }
 
-        log_err(
-            &ErrorReason::Assert,
-            &format!(
-                "StackFrame.up expected to find variable '{}' in frame but did not",
-                name
-            ),
-        );
-    }
-
-    /// Provides the vtable to the function provided for mutation.
-    fn mutate<F: FnMut(&mut VTable) -> Result<(), Err>>(&mut self, mut f: F) -> Result<(), Err> {
-        match self {
-            StackFrame::Frame { item, next: _ } => f(item),
-            StackFrame::Nil => Err(Err {
-                message: "frame not present".to_string(),
-                reason: ErrorReason::System,
-            }),
-        }
-    }
+    //     log_err(
+    //         &ErrorReason::Assert,
+    //         &format!(
+    //             "StackFrame.up expected to find variable '{}' in frame but did not",
+    //             name
+    //         ),
+    //     );
+    // }
 
     /// dumps the stack frame chain to return out.
     fn string(&self) -> Option<String> {
@@ -340,30 +327,34 @@ impl StackFrame {
 #[derive(Debug)]
 pub struct Context {
     /// cwd is an always-absolute path to current working dir (of module system)
-    cwd: Option<String>,
+    _cwd: Option<String>,
     /// The currently executing file's path, if any
-    file: Option<String>,
+    _file: Option<String>,
     /// Frame represents the Context's global heap
     frame: StackFrame,
+
+    fatal_err: bool,
+    debug_lex: bool,
+    debug_parse: bool,
+    debug_dump: bool,
 }
 
 impl Context {
-    fn new() -> Self {
-        let mut frame = StackFrame::new(VTable(HashMap::new()), StackFrame::Nil);
-
-        // load builtin-functions
-        load_func(&mut frame);
-
+    pub fn new(verbose: &bool) -> Self {
         Context {
-            cwd: None,
-            file: None,
-            frame,
+            _cwd: Some(env::current_dir().unwrap().to_str().unwrap().to_string()),
+            _file: None,
+            frame: StackFrame::new(VTable(HashMap::new()), StackFrame::Nil),
+            fatal_err: true,
+            debug_lex: *verbose,
+            debug_parse: *verbose,
+            debug_dump: *verbose,
         }
     }
 
-    fn reset_wd(&mut self) {
-        self.cwd = Some(env::current_dir().unwrap().to_str().unwrap().to_string());
-    }
+    // fn reset_wd(&mut self) {
+    //     self._cwd = Some(env::current_dir().unwrap().to_str().unwrap().to_string());
+    // }
 
     pub fn dump(&self) {
         if let Some(s) = self.frame.string() {
@@ -378,9 +369,13 @@ impl Context {
         let len = nodes.len();
         let mut last_val = _Value::Empty;
 
+        // load runtime
+        load_runtime(self);
+
         let mut iter = nodes.into_iter().enumerate();
         while let Some((i, node)) = iter.next() {
             let mut node = node;
+            //let frame = &mut self.frame;
             match node.eval(&mut self.frame, false) {
                 Ok(val) => {
                     if i == len - 1 {
@@ -406,23 +401,28 @@ impl Context {
 
     /// Runs a Speak program defined by the buffer. This is the main way to invoke Speak programs
     /// from Rust.
-    pub fn exec(&mut self, eng: &Engine, input: BufReader<&[u8]>) -> Result<_Value, Err> {
+    pub fn exec(&mut self, input: BufReader<&[u8]>) -> Result<_Value, Err> {
         let (tx, rx) = channel::<Tok>();
 
         let mut buf = input;
-        tokenize(&mut buf, &tx, eng.fatal_error, eng.debug_lex)?;
+        tokenize(&mut buf, &tx, self.fatal_err, self.debug_lex)?;
 
         let (nodes_chan, nodes_rx) = channel::<_Node>();
 
-        parse(rx, nodes_chan, eng.fatal_error, eng.debug_parse);
+        parse(rx, nodes_chan, self.fatal_err, self.debug_parse);
 
-        self.eval(nodes_rx.iter().collect::<Vec<_Node>>(), eng.debug_dump)
+        self.eval(nodes_rx.iter().collect::<Vec<_Node>>(), self.debug_dump)
     }
 
     /// Allows to Exec() a program file in a given context.
-    pub fn exec_path(&mut self, eng: &Engine, path: &str) -> Result<_Value, Err> {
-        let data = fs::read(path).expect("will resolve to the hello_world.spk file");
-        self.exec(eng, BufReader::new(&data[..]))
+    pub fn exec_path(&mut self, path: String) -> Result<_Value, Err> {
+        match fs::read(path) {
+            Ok(data) => self.exec(BufReader::new(&data[..])),
+            Err(err) => Err(Err {
+                message: format!("Speak encountered a system error: {}", err),
+                reason: ErrorReason::System,
+            }),
+        }
     }
 }
 
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_stack_frame() {
-        let mut frame = StackFrame::new(VTable::new(HashMap::new()), StackFrame::Nil);
+        let mut frame = StackFrame::new(VTable(HashMap::new()), StackFrame::Nil);
 
         // test stackframe.set(), stackframe.get()
         frame.set("a".to_string(), _Value::String("hello".to_string()));
@@ -448,22 +448,18 @@ mod tests {
         );
 
         // test stackframe.up(), stackframe.get()
-        frame.up("a".to_string(), _Value::String("mutated value".to_string()));
-        assert!(frame
-            .get("a")
-            .expect("key must be present")
-            .equals(_Value::String("mutated value".to_string())));
+        // frame.up("a".to_string(), _Value::String("mutated value".to_string()));
+        // assert!(frame
+        //     .get("a")
+        //     .expect("key must be present")
+        //     .equals(_Value::String("mutated value".to_string())));
 
         // test stackframe.get, in parent frame
         let frame = StackFrame::Frame {
-            item: VTable::new(HashMap::new()),
+            item: VTable(HashMap::new()),
             next: Box::new(frame),
         };
         assert!(frame.get("a").is_some());
         assert!(frame.get("b").is_none());
-
-        // ensure that built-in function println is present on context creation
-        let ctx = Context::new();
-        assert!(ctx.frame.get("println").is_some())
     }
 }
