@@ -4,6 +4,8 @@ mod core;
 use clap::{Parser, Subcommand};
 use std::io::{self, BufReader, Write};
 
+use crate::core::runtime::Context;
+
 /// The `Speak` CLI Compiler
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -34,7 +36,7 @@ enum Commands {
 
 fn main() {
     let speak_cli = SpeakCLI::parse();
-    let mut ctx = core::eval::Context::new(&speak_cli.verbose);
+    let mut ctx = Context::new(&speak_cli.verbose);
     match speak_cli.command {
         Commands::Run { file_path } => match ctx.exec_path(file_path) {
             Ok(val) => core::log::log_interactive(&val.string()),

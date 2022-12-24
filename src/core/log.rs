@@ -2,10 +2,10 @@ use crate::core::error::ErrorReason;
 
 static ANSI_RESET: &str = "[0;0m";
 static ANSI_BLUE: &str = "[34;22m";
-static ANSI_GREEN: &str = "[32;22m";
+//static ANSI_GREEN: &str = "[32;22m";
 static ANSI_RED: &str = "[31;22m";
 static ANSI_BLUE_BOLD: &str = "[34;1m";
-//static ANSI_GREEN_BOLD: &str = "[32;1m";
+static ANSI_GREEN_BOLD: &str = "[32;1m";
 static ANSI_RED_BOLD: &str = "[31;1m";
 
 pub fn log_debug(args: &str) {
@@ -16,7 +16,7 @@ pub fn log_debug(args: &str) {
 }
 
 pub fn log_interactive(args: &str) {
-    print!("{}{}{}", ANSI_GREEN, args, ANSI_RESET);
+    print!("{}{}{}", ANSI_GREEN_BOLD, args, ANSI_RESET);
 }
 
 pub fn log_safe_err(reason: &ErrorReason, args: &str) {
@@ -25,7 +25,6 @@ pub fn log_safe_err(reason: &ErrorReason, args: &str) {
         ErrorReason::Runtime => "runtime error",
         ErrorReason::System => "system error",
         ErrorReason::Assert => "invariant violation",
-      //  _default => "error",
     };
     eprintln!(
         "{}{}: {}{}{}",

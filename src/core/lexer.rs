@@ -335,6 +335,10 @@ pub fn tokenize(
                     token_commit(Kind::NegationOp)?;
                 }
                 '-' => {
+                    if let Some((_, '>')) = buf_iter.peek() {
+                        entry.push(c);
+                        continue;
+                    }
                     token_commit(Kind::SubtractOp)?;
                 }
                 '+' => {
