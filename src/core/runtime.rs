@@ -120,7 +120,7 @@ pub struct Context {
     /// The currently executing file's path, if any
     _file: Option<String>,
     /// Frame represents the Context's global heap
-    frame: StackFrame,
+    pub frame: StackFrame,
 
     fatal_err: bool,
     debug_lex: bool,

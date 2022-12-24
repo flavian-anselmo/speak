@@ -1,12 +1,12 @@
 use self::value::{Function, Value};
 use super::{
     error::{Err, ErrorReason},
-    lexer::{tokenize, Kind, Tok},
-    log::{log_debug, log_err},
-    parser::{parse, Node},
-    runtime::{self, StackFrame, VTable},
+    lexer::Kind,
+    log::log_err,
+    parser::Node,
+    runtime::{StackFrame, VTable},
 };
-use std::{collections::HashMap, env, fmt, fs, io::BufReader, sync::mpsc::channel};
+use std::collections::HashMap;
 
 pub mod r#type {
     #[derive(Debug, PartialEq, Eq, Clone)]
@@ -667,8 +667,9 @@ fn eval_speak_function(
 
         _ => Err(Err {
             message: format!(
-                "attempted to call a non-function value {}",
-                fn_value.string()
+                "attempted to call a non-function value {} of type {}",
+                fn_value.string(),
+                fn_value.value_type().string()
             ),
             reason: ErrorReason::Runtime,
         }),
@@ -725,4 +726,69 @@ fn to_value<'a>(op: &Node, stack: &'a mut StackFrame) -> Result<Value, Err> {
 
 fn is_intable(num: &f64) -> bool {
     *num == num.trunc()
+}
+
+#[cfg(test)]
+mod test {
+    use crate::core::{
+        lexer::Position,
+        parser::Node,
+        runtime::{load_builtins, Context},
+    };
+
+    #[test]
+    fn test_eval_speak_function() {
+        // new testing context
+        let mut ctx_test = Context::new(&true);
+        // load "println" to stack
+        load_builtins(&mut ctx_test);
+
+        let ident_pos = Position { line: 1, column: 1 };
+        let str_pos = Position { line: 1, column: 9 };
+        let h_str = "Hello World!";
+
+        // print "Hello World!" to stdout
+        // `println "Hello World!"`
+        {
+            let mut node_fn_call = Node::FunctionCall {
+                function: Box::new(Node::Identifier {
+                    value: "println".to_string(),
+                    position: ident_pos.clone(),
+                }),
+                arguments: vec![Node::StringLiteral {
+                    value: h_str.to_string(),
+                    position: str_pos.clone(),
+                }],
+                position: ident_pos.clone(),
+            };
+
+            let val = node_fn_call
+                .eval(&mut ctx_test.frame, false)
+                .expect("this should resolve to empty value");
+
+            assert_eq!(val.string(), "()");
+        }
+
+        // write "Hello World!" to output
+        // `sprint "Hello World!"`
+        {
+            let mut node_fn_call = Node::FunctionCall {
+                function: Box::new(Node::Identifier {
+                    value: "sprint".to_string(),
+                    position: ident_pos.clone(),
+                }),
+                arguments: vec![Node::StringLiteral {
+                    value: h_str.to_string(),
+                    position: str_pos.clone(),
+                }],
+                position: ident_pos.clone(),
+            };
+
+            let val = node_fn_call
+                .eval(&mut ctx_test.frame, false)
+                .expect("this should resolve to a string value");
+
+            assert_eq!(val.string(), h_str);
+        }
+    }
 }

@@ -11,7 +11,7 @@ use std::{
 };
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     NumberLiteral {
         value: f64,
@@ -44,7 +44,7 @@ pub enum Node {
         position: Position,
     },
     FunctionCall {
-        function: Box<Node>,
+        function: Box<Node>, 
         arguments: Vec<Node>,
         position: Position,
     },
@@ -146,7 +146,7 @@ pub fn parse(
     let (mut idx, length) = (0, tokens.len());
 
     while idx < length {
-        match parse_expression(&tokens[idx..]) {
+        match parse_expression(&tokens[idx..], false) {
             Ok((node, consumed)) => {
                 if debug_parser {
                     log_debug(&format!("parse -> {}", node.string()));
@@ -202,13 +202,14 @@ fn is_binary_op(t: &Tok) -> bool {
     }
 }
 
-fn parse_expression(tokens: &[Tok]) -> Result<(Node, usize), Err> {
+fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
+    let (atom, consumed) = parse_atom(&tokens, parsing_fn_args)?;
+    if consumed == tokens.len() {
+        return Ok((atom, consumed));
+    }
+
     let mut idx = 0;
-    let (atom, consumed) = parse_atom(&tokens[idx..])?;
-    idx += consumed;
-
     guard_unexpected_input_end(tokens, idx)?;
-
     let next_tok = &tokens[idx];
 
     match &next_tok.kind {
@@ -254,7 +255,7 @@ fn parse_binary_expression(
     tokens: &[Tok],
     previous_priority: i8,
 ) -> Result<(Node, usize), Err> {
-    let (right_operand, mut idx) = parse_atom(&tokens[1..])?;
+    let (right_operand, mut idx) = parse_atom(&tokens[1..], false)?;
 
     let mut ops = vec![operator.clone()];
     let mut nodes = vec![left_operand, right_operand];
@@ -273,7 +274,7 @@ fn parse_binary_expression(
 
             guard_unexpected_input_end(&tokens, idx)?;
 
-            let (right_atom, consumed) = parse_atom(&tokens[idx..])?;
+            let (right_atom, consumed) = parse_atom(&tokens[idx..], false)?;
             nodes.push(right_atom);
             idx += consumed;
         } else {
@@ -312,12 +313,12 @@ fn parse_binary_expression(
     Ok((tree, idx))
 }
 
-fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
+fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
     guard_unexpected_input_end(tokens, 0)?;
-    let (tok, mut idx) = (&tokens[0], 0);
+    let (tok, mut idx) = (&tokens[0], 1);
 
     if tok.kind == Kind::NegationOp {
-        let (operand, consumed) = parse_atom(&tokens[idx..])?;
+        let (operand, consumed) = parse_atom(&tokens[idx..], false)?;
 
         return Ok((
             Node::UnaryExpression {
@@ -325,11 +326,9 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
                 operand: Box::new(operand),
                 position: tok.position.clone(),
             },
-            consumed,
+            consumed + 1,
         ));
     }
-
-    guard_unexpected_input_end(tokens, idx)?;
 
     let mut atom: Node;
     match tok.kind {
@@ -339,7 +338,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
                     value: tok.num.clone().expect("this node has this value present"),
                     position: tok.position.clone(),
                 },
-                idx + 1,
+                idx,
             ));
         }
 
@@ -349,7 +348,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
                     value: tok.str.clone().expect("this node has this value present"),
                     position: tok.position.clone(),
                 },
-                idx + 1,
+                idx,
             ));
         }
 
@@ -359,7 +358,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
                     value: true,
                     position: tok.position.clone(),
                 },
-                idx + 1,
+                idx,
             ));
         }
 
@@ -369,7 +368,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
                     value: false,
                     position: tok.position.clone(),
                 },
-                idx + 1,
+                idx,
             ));
         }
 
@@ -394,7 +393,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
                     Node::EmptyIdentifier {
                         position: tok.position.clone(),
                     },
-                    idx + 1,
+                    idx,
                 ));
             }
         }
@@ -407,14 +406,13 @@ fn parse_atom(tokens: &[Tok]) -> Result<(Node, usize), Err> {
         }
     }
 
-    while idx < tokens.len() {
+    while !parsing_fn_args && idx < tokens.len() {
         match tokens[idx].kind {
             Kind::Identifier | Kind::StringLiteral | Kind::TrueLiteral | Kind::FalseLiteral => {
                 let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..])?;
 
                 idx += consumed;
                 atom = _atom;
-                guard_unexpected_input_end(tokens, idx)?;
             }
             _ => {
                 break;
@@ -439,22 +437,18 @@ fn parse_if_expression(tokens: &[Tok]) -> Result<(Node, usize), Err> {
 
 fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err> {
     let mut idx = 0;
-    // guard_unexpected_input_end(tokens, idx)?;
+    guard_unexpected_input_end(tokens, idx)?;
 
     // args should be on the same line, or be ')'
     let mut args = Vec::new();
-    while func.position().line == tokens[idx].position.line || tokens[idx].kind != Kind::RightParen
+    while idx < tokens.len()
+        && func.position().line == tokens[idx].position.line
+        && tokens[idx].kind != Kind::RightParen
     {
-        // consume seperator
-
-        let (expr, consumed) = parse_expression(&tokens[idx..])?;
+        let (expr, consumed) = parse_expression(&tokens[idx..], true)?;
 
         idx += consumed;
         args.push(expr);
-
-        if let Err(_) = guard_unexpected_input_end(&tokens, idx) {
-            break;
-        }
     }
 
     Ok((
@@ -507,9 +501,9 @@ fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
         }
     }
 
-    // guard_unexpected_input_end(tokens, idx)?;
+    guard_unexpected_input_end(tokens, idx)?;
 
-    let (body, consumed) = parse_expression(&tokens[idx..])?;
+    let (body, consumed) = parse_expression(&tokens[idx..], false)?;
     idx += consumed;
 
     Ok((
@@ -546,27 +540,51 @@ fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {
 #[cfg(test)]
 mod test {
     use super::parse_expression;
-    use crate::core::lexer::{Kind, Position, Tok};
+    use crate::core::{
+        lexer::{Kind, Position, Tok},
+        parser::Node,
+    };
 
     // "Hello World example"
     #[test]
     fn hello_world() {
+        let ident_pos = Position { line: 2, column: 1 };
+        let str_pos = Position { line: 2, column: 9 };
         let tokens = [
             Tok {
                 kind: Kind::Identifier,
                 str: Some("println".to_string()),
                 num: None,
-                position: Position { line: 2, column: 1 },
+                position: ident_pos.clone(),
             },
             Tok {
                 kind: Kind::StringLiteral,
                 str: Some("Hello World!".to_string()),
                 num: None,
-                position: Position { line: 2, column: 9 },
+                position: str_pos.clone(),
             },
         ];
 
-        match parse_expression(&tokens) {
+        let (res, consumed) =
+            parse_expression(&tokens, false).expect("this will return the FunctionCall node");
+        assert_eq!(2, consumed, "the number of nodes consumed");
+
+        assert_eq!(
+            Node::FunctionCall {
+                function: Box::new(Node::Identifier {
+                    value: "println".to_string(),
+                    position: ident_pos.clone()
+                }),
+                arguments: vec![Node::StringLiteral {
+                    value: "Hello World!".to_string(),
+                    position: str_pos
+                }],
+                position: ident_pos
+            },
+            res
+        );
+
+        match parse_expression(&tokens, false) {
             Ok((node, i)) => {
                 println!("Node: {:?}\npos:{}", node, i)
             }
