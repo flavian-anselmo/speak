@@ -2,7 +2,7 @@ use self::value::{Function, Value};
 use super::{
     error::{Err, ErrorReason},
     lexer::Kind,
-    log::log_err,
+    //   log::log_err,
     parser::Node,
     runtime::{StackFrame, VTable},
 };
@@ -607,10 +607,12 @@ fn eval_binary_expr_node(
                 return Ok(Value::Bool(left_value.equals(right_value)));
             }
 
-            _ => log_err(
-                &ErrorReason::Assert,
-                &format!("unknown binary operator {}", operator.string()),
-            ),
+            _ => {
+                return Err(Err {
+                    reason: ErrorReason::Assert,
+                    message: format!("unknown binary operator {}", operator.string()),
+                })
+            }
         }
     }
 
@@ -731,6 +733,7 @@ fn is_intable(num: &f64) -> bool {
 #[cfg(test)]
 mod test {
     use crate::core::{
+        eval::value::Value,
         lexer::Position,
         parser::Node,
         runtime::{load_builtins, Context},
@@ -741,7 +744,7 @@ mod test {
         // new testing context
         let mut ctx_test = Context::new(&true);
         // load "println" to stack
-        load_builtins(&mut ctx_test);
+        _ = load_builtins(&mut ctx_test);
 
         let ident_pos = Position { line: 1, column: 1 };
         let str_pos = Position { line: 1, column: 9 };
@@ -788,7 +791,14 @@ mod test {
                 .eval(&mut ctx_test.frame, false)
                 .expect("this should resolve to a string value");
 
-            assert_eq!(val.string(), h_str);
+            if let Value::String(_val) = val {
+                assert_eq!(_val, h_str);
+            } else {
+                panic!(
+                    "did not resolve to Value::String, value id of type {}",
+                    val.value_type().string()
+                )
+            }
         }
     }
 }

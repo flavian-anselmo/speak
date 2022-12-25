@@ -1,12 +1,14 @@
 #[macro_use]
 extern crate lazy_static;
 mod core;
+use crate::core::{
+    log::{log_interactive, log_safe_err},
+    runtime::Context,
+};
 use clap::{Parser, Subcommand};
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader};
 
-use crate::core::runtime::Context;
-
-/// The `Speak` CLI Compiler
+/// The `Speak` CLI Interpreter
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct SpeakCLI {
@@ -37,36 +39,30 @@ enum Commands {
 fn main() {
     let speak_cli = SpeakCLI::parse();
     let mut ctx = Context::new(&speak_cli.verbose);
+
     match speak_cli.command {
         Commands::Run { file_path } => match ctx.exec_path(file_path) {
-            Ok(val) => core::log::log_interactive(&val.string()),
-            Err(err) => core::log::log_err(&err.reason, &err.message),
+            Ok(val) => log_interactive(&format!("{}\n", val.string())),
+            Err(err) => log_safe_err(&err.reason, &err.message),
         },
-        Commands::Repl => {
+        Commands::Repl => loop {
             let mut input = String::new();
-            core::log::log_interactive("> ");
-            io::stdout().flush().unwrap();
+            log_interactive("\n> ");
 
             match io::stdin().read_line(&mut input) {
                 Ok(_) => match ctx.exec(BufReader::new(input.as_bytes())) {
                     Ok(val) => {
-                        core::log::log_interactive(&val.string());
-                        io::stdout().flush().unwrap();
+                        log_interactive(&val.string());
                     }
                     Err(err) => {
-                        core::log::log_err(&err.reason, &err.message);
-                        io::stdout().flush().unwrap();
+                        log_safe_err(&err.reason, &err.message);
                     }
                 },
                 Err(err) => {
-                    core::log::log_err(&core::error::ErrorReason::System, &err.to_string());
-                    io::stdout().flush().unwrap();
+                    log_safe_err(&core::error::ErrorReason::System, &err.to_string());
                 }
             }
-        }
-        Commands::Geniconf => {
-            println!("HERE 2");
-        }
+        },
+        Commands::Geniconf => {}
     }
-    println!("HERE 3");
 }

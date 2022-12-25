@@ -2,14 +2,14 @@
 //
 // naive implementation
 fib: n number -> number
-    if n == 0 ? 0
-    if n == 1 ? 1
+    if n = 0 ? 0
+    if n = 1 ? 1
     (fib n - 1) + (fib n - 2)
 
 // memoized implementation
 fibMemo: n number -> number
     memo is [0, 1,] // The trailing separator is important. 
-    if memo[n] == () ? memo[n] is (fibMemo n - 1) + (fibMemo n - 2)
+    if memo[n] = () ? memo[n] is (fibMemo n - 1) + (fibMemo n - 2)
     memo[n]
 
 

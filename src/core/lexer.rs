@@ -4,10 +4,7 @@ use super::{
     log::log_debug,
 };
 use regex::Regex;
-use std::{
-    io::{BufRead, BufReader},
-    sync::mpsc::Sender,
-};
+use std::io::{BufRead, BufReader};
 
 lazy_static! {
     static ref IDENTIFIER_REGEX: Regex =
@@ -42,8 +39,6 @@ pub enum Kind {
     GreaterThanOp,
     LessThanOp,
     EqualOp,
-
-    Return,
 
     TypeName(Type),
     Separator,
@@ -94,9 +89,7 @@ impl Kind {
             Kind::LogicalOrOp => "'|'".to_string(),
             Kind::GreaterThanOp => "'>'".to_string(),
             Kind::LessThanOp => "'<'".to_string(),
-            Kind::EqualOp => "'=='".to_string(),
-
-            Kind::Return => "'='".to_string(),
+            Kind::EqualOp => "'='".to_string(),
 
             Kind::FunctionArrow => "->".to_string(),
             Kind::ModuleAccessor => "::".to_string(),
@@ -152,8 +145,7 @@ impl Tok {
 // assumption: the inputs are valid UTF-8 strings.
 pub fn tokenize(
     unbuffered: &mut BufReader<&[u8]>,
-    tokens_chan: &Sender<Tok>,
-    _fatal_err: bool,
+    tokens: &mut Vec<Tok>,
     debug_lexer: bool,
 ) -> Result<(), Err> {
     // helper calculate column fn
@@ -186,7 +178,7 @@ pub fn tokenize(
         let mut entry = String::new();
         let mut last_line_column = (0, 0);
         while let Some((column, c)) = buf_iter.next() {
-            let token_commit = |kind| {
+            let token_commit = |kind, tokens| {
                 commit(
                     Tok {
                         kind,
@@ -197,7 +189,7 @@ pub fn tokenize(
                             column: column + 1,
                         },
                     },
-                    tokens_chan,
+                    tokens,
                     &debug_lexer,
                 )
             };
@@ -208,7 +200,7 @@ pub fn tokenize(
                     if entry.len() > 0 {
                         commit_arbitrary(
                             entry.clone(),
-                            tokens_chan,
+                            tokens,
                             &debug_lexer,
                             line,
                             col_fn(column, entry.len()),
@@ -233,9 +225,9 @@ pub fn tokenize(
                                                 column: col_fn(column, entry.len()) - 1,
                                             },
                                         },
-                                        tokens_chan,
+                                        tokens,
                                         &debug_lexer,
-                                    )?;
+                                    );
                                     entry.clear();
                                     break;
                                 }
@@ -259,7 +251,7 @@ pub fn tokenize(
                     if entry.len() > 0 {
                         commit_arbitrary(
                             entry.clone(),
-                            tokens_chan,
+                            tokens,
                             &debug_lexer,
                             line,
                             col_fn(column, entry.len()),
@@ -270,22 +262,22 @@ pub fn tokenize(
                     // lookahead for another ':', mkaing up ::; module accessor
                     if let Some((_, c)) = buf_iter.peek() {
                         if *c == ':' {
-                            token_commit(Kind::ModuleAccessor)?;
+                            token_commit(Kind::ModuleAccessor, tokens);
                             buf_iter.next();
                             continue;
                         }
                     }
-                    token_commit(Kind::Colon)?;
+                    token_commit(Kind::Colon, tokens);
                 }
                 '_' => {
-                    token_commit(Kind::EmptyIdentifier)?;
+                    token_commit(Kind::EmptyIdentifier, tokens);
                 }
                 ',' => {
                     // if there is previous entry, commit it as identifier
                     if entry.len() > 0 {
                         commit_arbitrary(
                             entry.clone(),
-                            tokens_chan,
+                            tokens,
                             &debug_lexer,
                             line,
                             col_fn(column, entry.len()),
@@ -293,21 +285,21 @@ pub fn tokenize(
                         entry.clear();
                     }
 
-                    token_commit(Kind::Separator)?;
+                    token_commit(Kind::Separator, tokens);
                 }
                 '.' => {
                     // if there is a previous entry let's try resolve as [Identifier][AccessorOp][Identifier]
                     if entry.len() > 0 && IDENTIFIER_REGEX.is_match(&entry) {
                         commit_arbitrary(
                             entry.clone(),
-                            tokens_chan,
+                            tokens,
                             &debug_lexer,
                             line,
                             col_fn(column, entry.len()),
                         )?;
 
                         entry.clear();
-                        token_commit(Kind::AccessorOp)?;
+                        token_commit(Kind::AccessorOp, tokens);
                         continue;
                     }
 
@@ -317,35 +309,35 @@ pub fn tokenize(
                     last_line_column.1 = column + 1;
                 }
                 '!' => {
-                    token_commit(Kind::Bang)?;
+                    token_commit(Kind::Bang, tokens);
                 }
                 '?' => {
-                    token_commit(Kind::QuestionMark)?;
+                    token_commit(Kind::QuestionMark, tokens);
                 }
                 '=' => {
-                    token_commit(Kind::Return)?;
+                    token_commit(Kind::EqualOp, tokens);
                 }
                 '(' => {
-                    token_commit(Kind::LeftParen)?;
+                    token_commit(Kind::LeftParen, tokens);
                 }
                 ')' => {
-                    token_commit(Kind::RightParen)?;
+                    token_commit(Kind::RightParen, tokens);
                 }
                 '~' => {
-                    token_commit(Kind::NegationOp)?;
+                    token_commit(Kind::NegationOp, tokens);
                 }
                 '-' => {
                     if let Some((_, '>')) = buf_iter.peek() {
                         entry.push(c);
                         continue;
                     }
-                    token_commit(Kind::SubtractOp)?;
+                    token_commit(Kind::SubtractOp, tokens);
                 }
                 '+' => {
-                    token_commit(Kind::AddOp)?;
+                    token_commit(Kind::AddOp, tokens);
                 }
                 '*' => {
-                    token_commit(Kind::MultiplyOp)?;
+                    token_commit(Kind::MultiplyOp, tokens);
                 }
                 '/' => {
                     if let Some((_, '/')) = buf_iter.peek() {
@@ -354,23 +346,23 @@ pub fn tokenize(
                     }
 
                     // commit as divideOp
-                    token_commit(Kind::DivideOp)?;
+                    token_commit(Kind::DivideOp, tokens);
                 }
                 '%' => {
-                    token_commit(Kind::ModulusOp)?;
+                    token_commit(Kind::ModulusOp, tokens);
                 }
                 '&' => {
-                    token_commit(Kind::LogicalAndOp)?;
+                    token_commit(Kind::LogicalAndOp, tokens);
                 }
                 '|' => {
-                    token_commit(Kind::LogicalOrOp)?;
+                    token_commit(Kind::LogicalOrOp, tokens);
                 }
                 '>' => {
                     // if the previous entry has '-', this is a function arrow
                     if entry == "-" {
                         commit_arbitrary(
                             entry.clone() + ">",
-                            tokens_chan,
+                            tokens,
                             &debug_lexer,
                             line,
                             col_fn(column, entry.len()),
@@ -380,10 +372,10 @@ pub fn tokenize(
                         continue;
                     }
 
-                    token_commit(Kind::GreaterThanOp)?;
+                    token_commit(Kind::GreaterThanOp, tokens);
                 }
                 '<' => {
-                    token_commit(Kind::LessThanOp)?;
+                    token_commit(Kind::LessThanOp, tokens);
                 }
                 _ => {
                     entry.push(c);
@@ -397,7 +389,7 @@ pub fn tokenize(
         if entry.len() > 0 {
             commit_arbitrary(
                 entry.clone(),
-                tokens_chan,
+                tokens,
                 &debug_lexer,
                 last_line_column.0,
                 col_fn(last_line_column.1, entry.len()),
@@ -410,17 +402,16 @@ pub fn tokenize(
     Ok(())
 }
 
-fn commit(tok: Tok, tokens_chan: &Sender<Tok>, debug_lexer: &bool) -> Result<(), Err> {
+fn commit(tok: Tok, tokens: &mut Vec<Tok>, debug_lexer: &bool) {
     if *debug_lexer {
         log_debug(&format!("lexer -> {}", tok.string()));
     }
-    tokens_chan.send(tok)?;
-    Ok(())
+    tokens.push(tok);
 }
 
 fn commit_arbitrary(
     entry: String,
-    tokens_chan: &Sender<Tok>,
+    tokens: &mut Vec<Tok>,
     debug_lexer: &bool,
     line: usize,
     column: usize,
@@ -430,7 +421,7 @@ fn commit_arbitrary(
         return Ok(());
     }
 
-    let commit_token = |kind| {
+    let commit_token = |kind, tokens| {
         commit(
             Tok {
                 kind,
@@ -438,45 +429,43 @@ fn commit_arbitrary(
                 num: None,
                 position: Position { line, column },
             },
-            tokens_chan,
+            tokens,
             debug_lexer,
         )
     };
 
     match entry.as_str() {
-        "number" => commit_token(Kind::TypeName(Type::Number)),
+        "number" => Ok(commit_token(Kind::TypeName(Type::Number), tokens)),
 
-        "bool" => commit_token(Kind::TypeName(Type::Bool)),
+        "bool" => Ok(commit_token(Kind::TypeName(Type::Bool), tokens)),
 
-        "string" => commit_token(Kind::TypeName(Type::String)),
+        "string" => Ok(commit_token(Kind::TypeName(Type::String), tokens)),
 
-        "->" => commit_token(Kind::FunctionArrow),
+        "->" => Ok(commit_token(Kind::FunctionArrow, tokens)),
 
-        "true" => commit_token(Kind::TrueLiteral),
+        "true" => Ok(commit_token(Kind::TrueLiteral, tokens)),
 
-        "false" => commit_token(Kind::FalseLiteral),
+        "false" => Ok(commit_token(Kind::FalseLiteral, tokens)),
 
-        "()" => commit_token(Kind::TypeName(Type::Empty)),
+        "()" => Ok(commit_token(Kind::TypeName(Type::Empty), tokens)),
 
-        "==" => commit_token(Kind::EqualOp),
+        "if" => Ok(commit_token(Kind::If, tokens)),
 
-        "if" => commit_token(Kind::If),
-
-        "is" => commit_token(Kind::AssignOp),
+        "is" => Ok(commit_token(Kind::AssignOp, tokens)),
 
         _ => {
             // check if entry string is numerical
             if let Ok(num) = entry.parse::<f64>() {
-                return commit(
+                return Ok(commit(
                     Tok {
                         kind: Kind::NumberLiteral,
                         str: None,
                         num: Some(num),
                         position: Position { line, column },
                     },
-                    tokens_chan,
+                    tokens,
                     debug_lexer,
-                );
+                ));
             }
 
             // identifiers should start with a number: a-z, A-Z, or _
@@ -487,16 +476,16 @@ fn commit_arbitrary(
                 });
             }
 
-            commit(
+            Ok(commit(
                 Tok {
                     kind: Kind::Identifier,
                     str: Some(entry.to_string()),
                     num: None,
                     position: Position { line, column },
                 },
-                tokens_chan,
+                tokens,
                 debug_lexer,
-            )
+            ))
         }
     }
 }
@@ -504,18 +493,18 @@ fn commit_arbitrary(
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::{
-        env,
-        fs::{self},
-        sync::mpsc::{channel, TryRecvError},
-    };
+    use std::{env, fs};
     #[test]
     fn test_commit_arbitrary() {
-        let (tx, rx) = channel::<Tok>();
+        // let (tx, rx) = channel::<Tok>();
+        let mut tokens = Vec::new();
 
-        commit_arbitrary("number".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        tokens.clear();
+        commit_arbitrary("number".to_string(), &mut tokens, &false, 1, 1)
+            .expect("commit does not fail");
+
         assert_eq!(
-            rx.recv().unwrap(),
+            tokens[0],
             Tok {
                 kind: Kind::TypeName(Type::Number),
                 str: None,
@@ -524,9 +513,11 @@ mod test {
             }
         );
 
-        commit_arbitrary("->".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        tokens.clear();
+        commit_arbitrary("->".to_string(), &mut tokens, &false, 1, 1)
+            .expect("commit does not fail");
         assert_eq!(
-            rx.recv().unwrap(),
+            tokens[0],
             Tok {
                 kind: Kind::FunctionArrow,
                 str: None,
@@ -535,9 +526,11 @@ mod test {
             }
         );
 
-        commit_arbitrary("123.23".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        tokens.clear();
+        commit_arbitrary("123.23".to_string(), &mut tokens, &false, 1, 1)
+            .expect("commit does not fail");
         assert_eq!(
-            rx.recv().unwrap(),
+            tokens[0],
             Tok {
                 kind: Kind::NumberLiteral,
                 str: None,
@@ -547,9 +540,11 @@ mod test {
         );
 
         // test random identifier
-        commit_arbitrary("_abc".to_string(), &tx, &false, 1, 1).expect("commit does not fail");
+        tokens.clear();
+        commit_arbitrary("_abc".to_string(), &mut tokens, &false, 1, 1)
+            .expect("commit does not fail");
         assert_eq!(
-            rx.recv().unwrap(),
+            tokens[0],
             Tok {
                 kind: Kind::Identifier,
                 str: Some("_abc".to_string()),
@@ -559,7 +554,7 @@ mod test {
         );
 
         assert_eq!(
-            commit_arbitrary("123abc".to_string(), &tx, &false, 1, 1).unwrap_err(),
+            commit_arbitrary("123abc".to_string(), &mut tokens, &false, 1, 1).unwrap_err(),
             Err {
                 reason: ErrorReason::Syntax,
                 message: "invalid identifier: 123abc".to_string()
@@ -569,44 +564,39 @@ mod test {
 
     #[test]
     fn test_tokenize() {
-        let (tx, rx) = channel::<Tok>();
+        let mut tokens = Vec::new();
         let mut buf_reader: BufReader<&[u8]>;
 
         // comments are ignored
         {
             buf_reader = BufReader::new("// this is a comment".as_bytes());
-            match tokenize(&mut buf_reader, &tx, true, true) {
+            match tokenize(&mut buf_reader, &mut tokens, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
             }
-            assert_eq!(
-                rx.try_recv().expect_err("recv chan must fail"),
-                TryRecvError::Empty
-            );
+            assert_eq!(tokens.len(), 0);
 
             buf_reader = BufReader::new(
                 "   // this is a spaced comment with an identation of 3 space char".as_bytes(),
             );
-            match tokenize(&mut buf_reader, &tx, true, true) {
+            match tokenize(&mut buf_reader, &mut tokens, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
             }
 
-            assert_eq!(
-                rx.try_recv().expect_err("recv chan must fail"),
-                TryRecvError::Empty
-            );
+            assert_eq!(tokens.len(), 0);
         }
 
         // single char tokens
         {
+            tokens.clear();
             buf_reader = BufReader::new(",".as_bytes());
-            match tokenize(&mut buf_reader, &tx, true, true) {
+            match tokenize(&mut buf_reader, &mut tokens, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
             }
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[0],
                 Tok {
                     kind: Kind::Separator,
                     str: None,
@@ -615,13 +605,14 @@ mod test {
                 }
             );
 
+            tokens.clear();
             buf_reader = BufReader::new(":".as_bytes());
-            match tokenize(&mut buf_reader, &tx, true, true) {
+            match tokenize(&mut buf_reader, &mut tokens, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
             }
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[0],
                 Tok {
                     kind: Kind::Colon,
                     str: None,
@@ -633,13 +624,14 @@ mod test {
 
         // tokenise an identifier and a string literal
         {
+            tokens.clear();
             buf_reader = BufReader::new("// This is module declaration.\nmod \"fmt\"".as_bytes());
-            if let Err(err) = tokenize(&mut buf_reader, &tx, true, true) {
+            if let Err(err) = tokenize(&mut buf_reader, &mut tokens, true) {
                 panic!("error: {}", err.message);
             }
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[0],
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("mod".to_string()),
@@ -649,7 +641,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[1],
                 Tok {
                     kind: Kind::StringLiteral,
                     str: Some("fmt".to_string()),
@@ -661,14 +653,15 @@ mod test {
 
         // tokenize a function signature
         {
+            tokens.clear();
             buf_reader = BufReader::new("sum: a, b number -> number".as_bytes());
-            match tokenize(&mut buf_reader, &tx, true, true) {
+            match tokenize(&mut buf_reader, &mut tokens, true) {
                 Ok(_) => (),
                 Err(e) => panic!("error: {}", e.message),
             }
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[0],
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("sum".to_string()),
@@ -678,7 +671,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[1],
                 Tok {
                     kind: Kind::Colon,
                     str: None,
@@ -688,7 +681,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[2],
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("a".to_string()),
@@ -698,7 +691,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[3],
                 Tok {
                     kind: Kind::Separator,
                     str: None,
@@ -708,7 +701,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[4],
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("b".to_string()),
@@ -718,7 +711,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[5],
                 Tok {
                     kind: Kind::TypeName(Type::Number),
                     str: None,
@@ -731,7 +724,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[6],
                 Tok {
                     kind: Kind::FunctionArrow,
                     str: None,
@@ -744,7 +737,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan does not fail"),
+                tokens[7],
                 Tok {
                     kind: Kind::TypeName(Type::Number),
                     str: None,
@@ -761,7 +754,7 @@ mod test {
     #[test]
     fn test_speak_files() {
         let cwd = env::current_dir().expect("there must be a wd");
-        let (tx, rx) = channel::<Tok>();
+        let mut tokens = Vec::new();
         let mut buf_reader: BufReader<&[u8]>;
 
         // hello_world.spk
@@ -770,12 +763,12 @@ mod test {
                 .expect("will resolve to the hello_world.spk file");
             buf_reader = BufReader::new(&data);
 
-            if let Err(err) = tokenize(&mut buf_reader, &tx, true, true) {
+            if let Err(err) = tokenize(&mut buf_reader, &mut tokens, true) {
                 panic!("error: {}", err.message);
             }
 
             assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
+                tokens[0],
                 Tok {
                     kind: Kind::Identifier,
                     str: Some("println".to_string()),
@@ -785,7 +778,7 @@ mod test {
             );
 
             assert_eq!(
-                rx.try_recv().expect("recv chan will not fail"),
+                tokens[1],
                 Tok {
                     kind: Kind::StringLiteral,
                     str: Some("Hello World!".to_string()),

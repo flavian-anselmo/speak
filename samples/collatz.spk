@@ -1,18 +1,18 @@
 // finding long collatz sequences
 
 next: n number -> number
-    if n % 2 == 0 ? = n / 2 ! = 3 * n + 1
+    if n % 2 = 0 ? n / 2 ! 3 * n + 1
 
 sequence: start number -> []number
     if start < 2 ? start
     (sub: n number, acc []number -> []number
-        if n == 1 ? acc
+        if n = 1 ? acc
         sub (next n) (len acc))
     sub start [start:]
 
 longestSequenceUnder: max number -> []number
     (sub: n, prevMax number, prevSeq []number -> []number
-        if n == max ? prevSeq
+        if n = max ? prevSeq
         currSeq is sequence n
 		currMax is len(currSeq)
 		if currMax > prevMax ? sub (n + 1) currMax currSeq

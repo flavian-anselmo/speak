@@ -2,13 +2,9 @@ use super::{
     error::{Err, ErrorReason},
     eval::r#type,
     lexer::{Kind, Position, Tok},
-    log::{log_err, log_safe_err},
 };
 use crate::core::log::log_debug;
-use std::{
-    fmt::Debug,
-    sync::mpsc::{Receiver, Sender},
-};
+use std::fmt::Debug;
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,7 +40,7 @@ pub enum Node {
         position: Position,
     },
     FunctionCall {
-        function: Box<Node>, 
+        function: Box<Node>,
         arguments: Vec<Node>,
         position: Position,
     },
@@ -136,35 +132,19 @@ impl Node {
 
 /// Parses a stream of tokens into AST [`_Node`]s.
 /// This implementation is a recursive descent parser.
-pub fn parse(
-    tokens_chan: Receiver<Tok>,
-    nodes_chan: Sender<Node>,
-    fatal_error: bool,
-    debug_parser: bool,
-) {
-    let tokens: Vec<Tok> = tokens_chan.iter().collect();
+pub fn parse(tokens: &[Tok], nodes_chan: &mut Vec<Node>, debug_parser: bool) -> Result<(), Err> {
     let (mut idx, length) = (0, tokens.len());
 
     while idx < length {
-        match parse_expression(&tokens[idx..], false) {
-            Ok((node, consumed)) => {
-                if debug_parser {
-                    log_debug(&format!("parse -> {}", node.string()));
-                }
-
-                idx += consumed;
-                nodes_chan.send(node).expect("this will always be valid");
-            }
-            Err(err) => {
-                if fatal_error {
-                    log_err(&err.reason, &err.message);
-                    return;
-                }
-                log_safe_err(&err.reason, &err.message);
-                return;
-            }
+        let (node, consumed) = parse_expression(&tokens[idx..], false)?;
+        if debug_parser {
+            log_debug(&format!("parse -> {}", node.string()));
         }
+
+        idx += consumed;
+        nodes_chan.push(node);
     }
+    Ok(())
 }
 
 fn get_op_priority(t: &Tok) -> i8 {

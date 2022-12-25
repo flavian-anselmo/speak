@@ -1,8 +1,8 @@
 // speak fizzbuzz implementation
-fizzbuzz: n int -> string
-    if n % 15 == 0 ? "FizzBuzz"
-    if n % 3 == 0 ? "Fizz"
-    if n % 5 == 0 ? "Buzz"
+fizzbuzz: n number -> string
+    if n % 15 = 0 ? "FizzBuzz"
+    if n % 3 = 0 ? "Fizz"
+    if n % 5 = 0 ? "Buzz"
     sprint n
 
 // call with 100

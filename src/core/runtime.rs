@@ -1,12 +1,12 @@
 use super::{
     error::{Err, ErrorReason},
     eval::value::Value,
-    lexer::{tokenize, Tok},
-    log::{log_debug, log_err},
+    lexer::tokenize,
+    log::log_debug,
     parser::{parse, Node},
 };
 use core::fmt;
-use std::{collections::HashMap, env, fs, io::BufReader, sync::mpsc::channel};
+use std::{collections::HashMap, env, fs, io::BufReader};
 
 pub const MAX_PRINT_LEN: usize = 120;
 
@@ -29,7 +29,10 @@ impl VTable {
 /// and recursively references other parent StackFrames internally.
 #[derive(Debug)]
 pub enum StackFrame {
-    Frame { item: VTable, next: Box<StackFrame> },
+    Frame {
+        frame: VTable,
+        parent_frame: Box<StackFrame>,
+    },
     Nil,
 }
 
@@ -37,15 +40,19 @@ impl StackFrame {
     /// Creates a new stack frame with the provided value table and parent stack frame.
     pub fn new(value_table: VTable, parent: StackFrame) -> Self {
         Self::Frame {
-            item: value_table,
-            next: Box::new(parent),
+            frame: value_table,
+            parent_frame: Box::new(parent),
         }
     }
 
     /// Get a value from the current stack frame chain.
     pub fn get(&self, name: &str) -> Option<&Value> {
         let mut frame = self;
-        while let StackFrame::Frame { item, next } = frame {
+        while let StackFrame::Frame {
+            frame: item,
+            parent_frame: next,
+        } = frame
+        {
             match item.get(name) {
                 Some(val) => return Some(val),
                 None => {
@@ -59,19 +66,27 @@ impl StackFrame {
 
     /// Sets a value to the provided stack frame.
     pub fn set(&mut self, name: String, val: Value) {
-        if let StackFrame::Frame { item, next: _ } = self {
+        if let StackFrame::Frame {
+            frame: item,
+            parent_frame: _,
+        } = self
+        {
             item.set(name, val)
         }
     }
 
     /// Updates a value in the stack frame chain.
-    fn up(&mut self, name: String, val: Value) {
+    fn up(&mut self, name: String, val: Value) -> Result<(), Err> {
         let mut frame = self;
-        while let StackFrame::Frame { item, next } = frame {
+        while let StackFrame::Frame {
+            frame: item,
+            parent_frame: next,
+        } = frame
+        {
             match item.get(&name) {
                 Some(_) => {
                     item.0.insert(name, val);
-                    return;
+                    return Ok(());
                 }
                 None => {
                     frame = next;
@@ -79,18 +94,22 @@ impl StackFrame {
             }
         }
 
-        log_err(
-            &ErrorReason::Assert,
-            &format!(
+        Err(Err {
+            reason: ErrorReason::Assert,
+            message: format!(
                 "StackFrame.up expected to find variable '{}' in frame but did not",
                 name
             ),
-        );
+        })
     }
 
     /// dumps the stack frame chain to return out.
     pub fn string(&self) -> Option<String> {
-        if let StackFrame::Frame { item, next } = self {
+        if let StackFrame::Frame {
+            frame: item,
+            parent_frame: next,
+        } = self
+        {
             let mut entries = Vec::new();
             for (k, v) in &item.0 {
                 let mut v_str = v.string();
@@ -122,7 +141,6 @@ pub struct Context {
     /// Frame represents the Context's global heap
     pub frame: StackFrame,
 
-    fatal_err: bool,
     debug_lex: bool,
     debug_parse: bool,
     debug_dump: bool,
@@ -134,7 +152,6 @@ impl Context {
             _cwd: Some(env::current_dir().unwrap().to_str().unwrap().to_string()),
             _file: None,
             frame: StackFrame::new(VTable(HashMap::new()), StackFrame::Nil),
-            fatal_err: true,
             debug_lex: *verbose,
             debug_parse: *verbose,
             debug_dump: *verbose,
@@ -159,29 +176,18 @@ impl Context {
         let mut last_val = Value::Empty;
 
         // load runtime
-        load_builtins(self);
+        load_builtins(self)?;
 
         let mut iter = nodes.into_iter().enumerate();
         while let Some((i, node)) = iter.next() {
             let mut node = node;
             //let frame = &mut self.frame;
-            match node.eval(&mut self.frame, false) {
-                Ok(val) => {
-                    if i == len - 1 {
-                        if dump_frame {
-                            self.dump();
-                        }
-                        last_val = val;
-                    }
+            let val = node.eval(&mut self.frame, false)?;
+            if i == len - 1 {
+                if dump_frame {
+                    self.dump();
                 }
-                Err(err) => {
-                    log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
-                    if dump_frame {
-                        self.dump();
-                    }
-
-                    return Err(err);
-                }
+                last_val = val;
             }
         }
 
@@ -191,16 +197,16 @@ impl Context {
     /// Runs a Speak program defined by the buffer. This is the main way to invoke Speak programs
     /// from Rust.
     pub fn exec(&mut self, input: BufReader<&[u8]>) -> Result<Value, Err> {
-        let (tx, rx) = channel::<Tok>();
+        let mut tokens = Vec::new();
 
         let mut buf = input;
-        tokenize(&mut buf, &tx, self.fatal_err, self.debug_lex)?;
+        tokenize(&mut buf, &mut tokens, self.debug_lex)?;
 
-        let (nodes_chan, nodes_rx) = channel::<Node>();
+        let mut nodes = Vec::new();
 
-        parse(rx, nodes_chan, self.fatal_err, self.debug_parse);
+        parse(&tokens, &mut nodes, self.debug_parse)?;
 
-        self.eval(nodes_rx.iter().collect::<Vec<Node>>(), self.debug_dump)
+        self.eval(nodes, self.debug_dump)
     }
 
     /// Allows to Exec() a program file in a given context.
@@ -231,96 +237,106 @@ impl fmt::Debug for NativeFn {
 }
 
 /// This loads up the built-in functions which come with the interpreter.
-pub fn load_builtins(ctx: &mut Context) {
-    if let StackFrame::Frame { item, next: _ } = &mut ctx.frame {
-        item.set(
-            "println".to_string(),
-            Value::NativeFunction(NativeFunction("println".to_string(), |_, inputs| {
-                println!(
-                    "{}",
-                    inputs
-                        .iter()
-                        .fold(String::new(), |acc, x| acc + &x.string())
-                );
-
-                Ok(Value::Empty)
-            })),
-        );
-
-        item.set(
-            "sprint".to_string(),
-            Value::NativeFunction(NativeFunction("sprint".to_string(), |_, inputs| {
-                Ok(Value::String(inputs[0].string()))
-            })),
-        );
-
-        item.set(
-            "sprintf".to_string(),
-            Value::NativeFunction(NativeFunction("sprintf".to_string(), |_, inputs| {
-                if inputs.len() <= 1 {
-                    return Err(Err {
-                        reason: ErrorReason::Runtime,
-                        message: "sprintf takes at least two arguments".to_string(),
-                    });
-                }
-
-                Ok(Value::String(
-                    inputs[0].string().split("{}").enumerate().fold(
-                        String::new(),
-                        |acc, (i, x)| {
-                            if i == inputs.len() - 1 {
-                                acc + x
-                            } else {
-                                acc + x + &inputs[i + 1].string()
-                            }
-                        },
-                    ),
-                ))
-            })),
-        );
-
-        item.set(
-            "len".to_string(),
-            Value::NativeFunction(NativeFunction("len".to_string(), |_, inputs| {
-                if inputs.len() != 1 {
-                    return Err(Err {
-                        reason: super::error::ErrorReason::Runtime,
-                        message: "len() takes exactly one argument".to_string(),
-                    });
-                }
-
-                // todo: check if input is a string or list, fail for number
-                Ok(Value::Number(inputs.len() as f64))
-            })),
-        );
-
-        return item.set(
-            "mod".to_string(),
-            Value::NativeFunction(NativeFunction(
-                "mod".to_string(),
-                |_stack: &mut StackFrame, inputs: &[Value]| -> Result<Value, Err> {
-                    for i in inputs {
-                        match i {
-                            Value::String(_path) => {
-                                // TODO: load data to stack
-                                unimplemented!()
-                            }
-                            _ => {
-                                return Err(Err {
-                                    message: "mod arguements must be string literals".to_string(),
-                                    reason: ErrorReason::Runtime,
-                                });
-                            }
-                        }
-                    }
+pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
+    match &mut ctx.frame {
+        StackFrame::Frame { frame, .. } => {
+            frame.set(
+                "println".to_string(),
+                Value::NativeFunction(NativeFunction("println".to_string(), |_, inputs| {
+                    println!(
+                        "{}",
+                        inputs
+                            .iter()
+                            .fold(String::new(), |acc, x| acc + &x.string())
+                    );
 
                     Ok(Value::Empty)
-                },
-            )),
-        );
-    }
+                })),
+            );
 
-    log_err(&ErrorReason::Assert, "Stackframe provided is Nil")
+            frame.set(
+                "sprint".to_string(),
+                Value::NativeFunction(NativeFunction("sprint".to_string(), |_, inputs| {
+                    Ok(Value::String(inputs[0].string()))
+                })),
+            );
+
+            frame.set(
+                "sprintf".to_string(),
+                Value::NativeFunction(NativeFunction("sprintf".to_string(), |_, inputs| {
+                    if inputs.len() <= 1 {
+                        return Err(Err {
+                            reason: ErrorReason::Runtime,
+                            message: "sprintf takes at least two arguments".to_string(),
+                        });
+                    }
+
+                    Ok(Value::String(
+                        inputs[0].string().split("{}").enumerate().fold(
+                            String::new(),
+                            |acc, (i, x)| {
+                                if i == inputs.len() - 1 {
+                                    acc + x
+                                } else {
+                                    acc + x + &inputs[i + 1].string()
+                                }
+                            },
+                        ),
+                    ))
+                })),
+            );
+
+            frame.set(
+                "len".to_string(),
+                Value::NativeFunction(NativeFunction("len".to_string(), |_, inputs| {
+                    if inputs.len() != 1 {
+                        return Err(Err {
+                            reason: super::error::ErrorReason::Runtime,
+                            message: "len() takes exactly one argument".to_string(),
+                        });
+                    }
+
+                    // todo: check if input is a string or list, fail for number
+                    Ok(Value::Number(inputs.len() as f64))
+                })),
+            );
+
+            frame.set(
+                "mod".to_string(),
+                Value::NativeFunction(NativeFunction(
+                    "mod".to_string(),
+                    |_stack: &mut StackFrame, inputs: &[Value]| -> Result<Value, Err> {
+                        for i in inputs {
+                            match i {
+                                Value::String(_path) => {
+                                    // TODO: load data to stack
+                                    unimplemented!()
+                                }
+                                _ => {
+                                    return Err(Err {
+                                        message: "mod arguements must be string literals"
+                                            .to_string(),
+                                        reason: ErrorReason::Runtime,
+                                    });
+                                }
+                            }
+                        }
+
+                        Ok(Value::Empty)
+                    },
+                )),
+            );
+
+            return Ok(());
+        }
+
+        StackFrame::Nil => {
+            return Err(Err {
+                message: "Stackframe provided is Nil".to_string(),
+                reason: ErrorReason::Assert,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -345,7 +361,9 @@ mod tests {
         );
 
         // test stackframe.up(), stackframe.get()
-        frame.up("a".to_string(), Value::String("mutated value".to_string()));
+        frame
+            .up("a".to_string(), Value::String("mutated value".to_string()))
+            .expect("this calls to an already initialized variable on the stack");
         assert!(frame
             .get("a")
             .expect("key must be present")
@@ -353,10 +371,41 @@ mod tests {
 
         // test stackframe.get, in parent frame
         let frame = StackFrame::Frame {
-            item: VTable(HashMap::new()),
-            next: Box::new(frame),
+            frame: VTable(HashMap::new()),
+            parent_frame: Box::new(frame),
         };
         assert!(frame.get("a").is_some());
         assert!(frame.get("b").is_none());
+    }
+
+    #[test]
+    fn hello_world_eval() {
+        let mut ctx_test = Context::new(&true);
+
+        if let Err(err) = load_builtins(&mut ctx_test) {
+            panic!("{:?}", err)
+        }
+
+        let buf_reader = BufReader::new(r#"sprint "Hello World!""#.as_bytes());
+        match ctx_test.exec(buf_reader) {
+            Ok(val) => {
+                println!("{:?}\ndone!", val)
+            }
+            Err(err) => panic!("{:?}", err),
+        }
+
+        let cwd = env::current_dir().expect("there must be a wd");
+
+        match ctx_test.exec_path(
+            cwd.join("samples/hello_world.spk")
+                .to_str()
+                .unwrap()
+                .to_string(),
+        ) {
+            Ok(val) => {
+                println!("{:?}", val)
+            }
+            Err(err) => panic!("{:?}", err),
+        }
     }
 }
