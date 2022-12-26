@@ -49,11 +49,17 @@ pub enum Node {
         body: Box<Node>,
         position: Position,
     },
-    // IfExprNode {
-    //     condition: Box<_Node>,
-    //     clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
-    //     position: Position,
-    // },
+
+    IfExpr {
+        condition: Box<Node>, // Must be BooleanExprNode or eval to value
+        on_true: Option<Box<Node>>,
+        on_false: Option<Box<Node>>,
+        position: Position,
+    }, // IfExprNode {
+       //     condition: Box<_Node>,
+       //     clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
+       //     position: Position,
+       // },
 }
 
 impl Node {
@@ -99,18 +105,21 @@ impl Node {
                 .fold(format!("Function ({}):", position.string()), |acc, arg| {
                     format!("{}, {}", acc, arg.1.string())
                 }),
-            // _Node::IfExprNode {
-            //     condition, clauses, ..
-            // } => {
-            //     let mut s = format!("If ({})", condition.string());
-            //     if let Some(true_clause) = &clauses.0 {
-            //         s.push_str(&format!("? ({})", true_clause.string()));
-            //     }
-            //     if let Some(false_clause) = &clauses.1 {
-            //         s.push_str(&format!("! ({})", false_clause.string()));
-            //     }
-            //     s
-            // }
+            Node::IfExpr {
+                condition,
+                on_true,
+                on_false,
+                position,
+            } => {
+                let mut s = format!("If ({}): ({})", position.string(), condition.string());
+                if let Some(true_clause) = &on_true {
+                    s.push_str(&format!("? ({})", true_clause.string()));
+                }
+                if let Some(false_clause) = &on_false {
+                    s.push_str(&format!("! ({})", false_clause.string()));
+                }
+                s
+            }
         }
     }
 
@@ -125,7 +134,7 @@ impl Node {
             Node::BinaryExpression { position, .. } => position,
             Node::FunctionCall { position, .. } => position,
             Node::FunctionLiteral { position, .. } => position,
-            // _Node::IfExprNode { position, .. } => position,
+            Node::IfExpr { position, .. } => position,
         }
     }
 }
@@ -183,23 +192,20 @@ fn is_binary_op(t: &Tok) -> bool {
 }
 
 fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
-    let (atom, consumed) = parse_atom(&tokens, parsing_fn_args)?;
+    let (atom, consumed) = parse_atom(tokens, parsing_fn_args)?;
     if consumed == tokens.len() {
         return Ok((atom, consumed));
     }
 
-    let mut idx = 0;
+    let mut idx = consumed;
     guard_unexpected_input_end(tokens, idx)?;
     let next_tok = &tokens[idx];
+    idx += 1;
 
     match &next_tok.kind {
-        Kind::Separator => Ok((atom, idx)), // consumed
+        Kind::RightParen => Ok((atom, idx - 1)), // consumed by caller
 
-        Kind::If => {
-            let (if_expr, consumed) = parse_if_expression(&tokens[idx..])?;
-            idx += consumed;
-            Ok((if_expr, idx))
-        }
+        Kind::Separator => Ok((atom, idx)), // consumed
 
         Kind::AddOp
         | Kind::SubtractOp
@@ -213,7 +219,7 @@ fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usiz
         | Kind::EqualOp
         | Kind::AssignOp
         | Kind::AccessorOp => {
-            let (bin_expr, consumed) = parse_binary_expression(atom, next_tok, &tokens[idx..], -1)?;
+            let (bin_expr, consumed) = parse_binary_expr(atom, next_tok, &tokens[idx..], -1)?;
             idx += consumed;
             Ok((bin_expr, idx))
         }
@@ -229,13 +235,13 @@ fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usiz
     }
 }
 
-fn parse_binary_expression(
+fn parse_binary_expr(
     left_operand: Node,
     operator: &Tok,
     tokens: &[Tok],
     previous_priority: i8,
 ) -> Result<(Node, usize), Err> {
-    let (right_operand, mut idx) = parse_atom(&tokens[1..], false)?;
+    let (right_operand, mut idx) = parse_atom(tokens, false)?;
 
     let mut ops = vec![operator.clone()];
     let mut nodes = vec![left_operand, right_operand];
@@ -262,20 +268,21 @@ fn parse_binary_expression(
 
             // Priority is higher than the previous op, so we need to
             // make it right-heavy
-            let (subtree, consumed) = parse_binary_expression(
-                nodes[nodes.len() - 1].clone(),
+            let pos = nodes.len() - 1;
+            let (subtree, consumed) = parse_binary_expr(
+                nodes[pos].clone(),
                 &tokens[idx],
                 &tokens[idx + 1..],
                 get_op_priority(&ops[ops.len() - 1]),
             )?;
 
-            nodes.insert(nodes.len() - 1, subtree);
+            nodes[pos] = subtree;
             idx += consumed + 1;
         }
     }
 
     // ops, nodes -> left-biased binary expression tree
-    let mut tree = nodes.get(0).expect("this value is present").clone(); //nodes[0];
+    let mut tree = nodes[0].clone();
     let mut nodes = &nodes[1..];
 
     while ops.len() > 0 {
@@ -286,7 +293,7 @@ fn parse_binary_expression(
             position: ops[0].position.clone(),
         };
 
-        ops.remove(0);
+        ops = ops[1..].to_vec();
         nodes = &nodes[1..];
     }
 
@@ -297,21 +304,25 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
     guard_unexpected_input_end(tokens, 0)?;
     let (tok, mut idx) = (&tokens[0], 1);
 
-    if tok.kind == Kind::NegationOp {
-        let (operand, consumed) = parse_atom(&tokens[idx..], false)?;
-
-        return Ok((
-            Node::UnaryExpression {
-                operator: tok.kind.clone(),
-                operand: Box::new(operand),
-                position: tok.position.clone(),
-            },
-            consumed + 1,
-        ));
-    }
-
     let mut atom: Node;
     match tok.kind {
+        Kind::If => return parse_if_expr(tokens),
+
+        Kind::LeftParen => return parse_capsulated_expr(tokens, idx),
+
+        Kind::NegationOp => {
+            let (operand, consumed) = parse_atom(&tokens[idx..], false)?;
+
+            return Ok((
+                Node::UnaryExpression {
+                    operator: tok.kind.clone(),
+                    operand: Box::new(operand),
+                    position: tok.position.clone(),
+                },
+                consumed + 1,
+            ));
+        }
+
         Kind::NumberLiteral => {
             return Ok((
                 Node::NumberLiteral {
@@ -353,6 +364,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
         }
 
         Kind::Identifier => {
+            guard_unexpected_input_end(tokens, idx)?;
             if tokens[idx].kind == Kind::Colon {
                 // colon after identifier means the identifier is a function literal
                 (atom, idx) = parse_function_literal(&tokens)?;
@@ -388,7 +400,12 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
 
     while !parsing_fn_args && idx < tokens.len() {
         match tokens[idx].kind {
-            Kind::Identifier | Kind::StringLiteral | Kind::TrueLiteral | Kind::FalseLiteral => {
+            Kind::Identifier
+            | Kind::StringLiteral
+            | Kind::NumberLiteral
+            | Kind::TrueLiteral
+            | Kind::FalseLiteral
+            | Kind::LeftParen => {
                 let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..])?;
 
                 idx += consumed;
@@ -403,16 +420,54 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
     Ok((atom, idx))
 }
 
-fn parse_if_expression(tokens: &[Tok]) -> Result<(Node, usize), Err> {
-    let (_tok, mut idx) = (&tokens[0], 1);
-    // if n % 2 == 0 ? = n / 2 ! = 3 * n + 1
+fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Err> {
+    // grouped expression that evals to a single expression or a function literal node
+    let (atom, consumed) = parse_expression(&tokens[idx..], false)?;
+    let idx = idx + consumed;
 
-    // check either for first occurence of ? or !, whichever comes first
-    while tokens[idx].kind != Kind::QuestionMark || tokens[idx].kind != Kind::Bang {
-        idx += 1;
+    guard_unexpected_input_end(tokens, idx)?;
+    if tokens[idx].kind != Kind::RightParen {
+        return Err(Err {
+            message: format!(
+                "the expression expected ')' after [{}]",
+                tokens[idx - 1].string()
+            ),
+            reason: ErrorReason::Syntax,
+        });
     }
-    // let (condition, consumed) = parse_expression(&tokens[idx..])?;
-    unimplemented!("parse_if_body")
+    return Ok((atom, idx + 1)); // +1 for the RightParen
+}
+
+fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
+    let (condition, mut idx) = parse_atom(tokens, false)?;
+
+    let mut if_arms = [None::<Box<Node>>, None::<Box<Node>>];
+    while idx < tokens.len()
+        && (tokens[idx].kind == Kind::QuestionMark || tokens[idx].kind == Kind::Bang)
+    {
+        guard_unexpected_input_end(tokens, idx + 1)?;
+        let (arm, consumed) = parse_atom(&tokens[idx + 1..], false)?;
+
+        // arm assignment; not checking for overwrites
+        if tokens[idx].kind == Kind::QuestionMark {
+            if_arms[0] = Some(Box::new(arm));
+        } else {
+            if_arms[1] = Some(Box::new(arm))
+        }
+
+        idx += consumed;
+    }
+
+    let pos = condition.position();
+    Ok((
+        Node::IfExpr {
+            condition: Box::new(condition.clone()),
+            on_true: if_arms[0].clone(),
+            on_false: if_arms[1].clone(),
+            position: pos.clone(),
+        },
+        idx,
+    ))
 }
 
 fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err> {
@@ -445,12 +500,6 @@ fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
     let (tok, mut idx) = (&tokens[0], 1);
     let mut arguments = Vec::new();
     guard_unexpected_input_end(tokens, idx)?;
-
-    // fizzbuzz: n int -> string
-    //  if n % 15 == 0 ? = "FizzBuzz"
-    //  if n % 3 == 0 ? = "Fizz"
-    //  if n % 5 == 0 ? = "Buzz"
-    //  = sprint n
 
     match tok.kind {
         Kind::LeftParen => {
@@ -563,14 +612,93 @@ mod test {
             },
             res
         );
+    }
 
-        match parse_expression(&tokens, false) {
-            Ok((node, i)) => {
-                println!("Node: {:?}\npos:{}", node, i)
-            }
-            Err(err) => {
-                panic!("{}", err.message)
-            }
-        }
+    // Binary Expression
+    #[test]
+    fn binary_expr() {
+        // 100 * 2 + 3
+        let tokens = [
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: None,
+                num: Some(100f64),
+                position: Position { line: 1, column: 8 },
+            },
+            Tok {
+                kind: Kind::MultiplyOp,
+                str: None,
+                num: None,
+                position: Position {
+                    line: 1,
+                    column: 12,
+                },
+            },
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: None,
+                num: Some(2f64),
+                position: Position {
+                    line: 1,
+                    column: 14,
+                },
+            },
+            Tok {
+                kind: Kind::AddOp,
+                str: None,
+                num: None,
+                position: Position {
+                    line: 1,
+                    column: 17,
+                },
+            },
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: None,
+                num: Some(3f64),
+                position: Position {
+                    line: 1,
+                    column: 19,
+                },
+            },
+        ];
+
+        let (res, consumed) =
+            parse_expression(&tokens, false).expect("this will return the FunctionCall node");
+        assert_eq!(5, consumed, "the number of nodes consumed");
+
+        let expect = Node::BinaryExpression {
+            operator: Kind::AddOp,
+            left_operand: Box::new(Node::BinaryExpression {
+                operator: Kind::MultiplyOp,
+                left_operand: Box::new(Node::NumberLiteral {
+                    value: 100.0,
+                    position: Position { line: 1, column: 8 },
+                }),
+                right_operand: Box::new(Node::NumberLiteral {
+                    value: 2.0,
+                    position: Position {
+                        line: 1,
+                        column: 14,
+                    },
+                }),
+                position: Position {
+                    line: 1,
+                    column: 12,
+                },
+            }),
+            right_operand: Box::new(Node::NumberLiteral {
+                value: 3.0,
+                position: Position {
+                    line: 1,
+                    column: 19,
+                },
+            }),
+            position: Position {
+                line: 1,
+                column: 17,
+            },
+        };
+        assert_eq!(res, expect);
     }
 }

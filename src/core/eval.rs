@@ -2,7 +2,6 @@ use self::value::{Function, Value};
 use super::{
     error::{Err, ErrorReason},
     lexer::Kind,
-    //   log::log_err,
     parser::Node,
     runtime::{StackFrame, VTable},
 };
@@ -163,9 +162,15 @@ impl Node {
                             *value = !*value;
                             Ok(Value::Bool(value.clone()))
                         }
-                        _ => unimplemented!("should not evalute to a identifier"),
+                        _ => Err(Err {
+                            message: format!(
+                                "invalid unary operand {}, at {}",
+                                op.string(),
+                                position.string()
+                            ),
+                            reason: ErrorReason::Runtime,
+                        }),
                     }
-                    // Ok(())
                 };
 
                 let cl_operand = operand.as_ref();
@@ -229,11 +234,57 @@ impl Node {
             Node::FunctionLiteral { .. } => Ok(Value::Function(Function {
                 defn: Box::new(self.clone()),
             })),
-            // _Node::IfExprNode { .. } => {
-            //     unimplemented!()
-            // }
+            Node::IfExpr { .. } => eval_if_expr_node(&self, stack, allow_thunk),
         }
     }
+}
+
+fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> Result<Value, Err> {
+    if let Node::IfExpr {
+        condition,
+        on_true,
+        on_false,
+        ..
+    } = node
+    {
+        // assert that condition evaluates to boolean value
+        let mut condition = condition.as_ref().clone();
+        match condition.eval(stack, allow_thunk.clone())? {
+            Value::Bool(val) => {
+                if val {
+                    match on_true {
+                        Some(on_true) => {
+                            let mut on_true = on_true.as_ref().clone();
+                            return on_true.eval(stack, allow_thunk);
+                        }
+                        None => return Ok(Value::Empty),
+                    }
+                }
+                match on_false {
+                    Some(on_false) => {
+                        let mut on_false = on_false.as_ref().clone();
+                        return on_false.eval(stack, allow_thunk);
+                    }
+                    None => return Ok(Value::Empty),
+                }
+            }
+            _ => {
+                return Err(Err {
+                    message: format!(
+                        "the codition, ({}) at [{}], does not evaluate to bool value",
+                        condition.string(),
+                        node.position().string()
+                    ),
+                    reason: ErrorReason::Runtime,
+                });
+            }
+        }
+    }
+
+    return Err(Err {
+        reason: ErrorReason::System,
+        message: "".to_string(),
+    });
 }
 
 fn eval_binary_expr_node(
@@ -250,8 +301,8 @@ fn eval_binary_expr_node(
     {
         let mut left_right = || -> Result<(Value, Value), Err> {
             Ok((
-                to_value(left_operand, stack)?,
-                to_value(right_operand, stack)?,
+                to_value(left_operand.as_ref().clone(), stack)?,
+                to_value(right_operand.as_ref().clone(), stack)?,
             ))
         };
 
@@ -260,7 +311,7 @@ fn eval_binary_expr_node(
                 match left_operand.as_ref() {
                     Node::Identifier { value, .. } => {
                         // right operand node must evaluate to a value
-                        let right_value = to_value(right_operand, stack)?;
+                        let right_value = to_value(right_operand.as_ref().clone(), stack)?;
                         stack.set(value.clone(), right_value.clone());
                         return Ok(right_value);
                     }
@@ -271,7 +322,18 @@ fn eval_binary_expr_node(
                         right_operand: _l_right_operand,
                         position: _l_position,
                     } => {
-                        unimplemented!() // method access
+                        if let Kind::AccessorOp = _l_operator {
+                            unimplemented!() // method access
+                        } else {
+                            return Err(Err {
+                                message: format!(
+                                    "cannot assing value to non-identifier {}, at [{}]",
+                                    _l_left_operand.string(),
+                                    left_operand.position().string(),
+                                ),
+                                reason: ErrorReason::Runtime,
+                            });
+                        }
                     }
 
                     _ => {
@@ -289,7 +351,7 @@ fn eval_binary_expr_node(
             }
 
             Kind::AccessorOp => {
-                todo!()
+                unimplemented!() // method access
             }
 
             Kind::AddOp => {
@@ -614,11 +676,21 @@ fn eval_binary_expr_node(
                 })
             }
         }
-    }
 
+        return Err(Err {
+            reason: ErrorReason::Runtime,
+            message: format!(
+                "cannot perform op, {}, on ({}) and ({}), at [{}]",
+                operator.string(),
+                left_operand.string(),
+                right_operand.string(),
+                node.position().string()
+            ),
+        });
+    }
     return Err(Err {
         reason: ErrorReason::Assert,
-        message: format!("node provided is not a BinaryExprNode",),
+        message: format!("node provided is not a BinaryExprNode"),
     });
 }
 
@@ -698,17 +770,18 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
     Ok(v)
 }
 
-fn to_value<'a>(op: &Node, stack: &'a mut StackFrame) -> Result<Value, Err> {
+fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
+    let mut op = op;
     match op {
-        Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
-        Node::NumberLiteral { value, .. } => Ok(Value::Number(value.clone())),
-        Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())),
+        Node::StringLiteral { value, .. } => Ok(Value::String(value)),
+        Node::NumberLiteral { value, .. } => Ok(Value::Number(value)),
+        Node::BoolLiteral { value, .. } => Ok(Value::Bool(value)),
         Node::Identifier { value, .. } => {
-            if let Some(val) = stack.get(value) {
+            if let Some(val) = stack.get(&value) {
                 return Ok(val.clone());
             }
             return Err(Err {
-                message: "value not found in stack".to_string(),
+                message: format!("value for identifier, {},  not found in stack", value),
                 reason: ErrorReason::Runtime,
             });
         }
@@ -716,9 +789,9 @@ fn to_value<'a>(op: &Node, stack: &'a mut StackFrame) -> Result<Value, Err> {
             message: format!("cannot assign an empty identifier a value"),
             reason: ErrorReason::Runtime,
         }),
-        Node::FunctionLiteral { .. } => Ok(Value::Function(Function {
-            defn: Box::new(op.clone()),
-        })),
+        Node::FunctionLiteral { .. } => Ok(Value::Function(Function { defn: Box::new(op) })),
+        Node::BinaryExpression { .. } => op.eval(stack, false),
+        Node::FunctionCall { .. } => op.eval(stack, false),
         _ => Err(Err {
             message: "cannot resolve to concrete value of node provided".to_string(),
             reason: ErrorReason::System,

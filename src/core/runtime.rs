@@ -181,7 +181,6 @@ impl Context {
         let mut iter = nodes.into_iter().enumerate();
         while let Some((i, node)) = iter.next() {
             let mut node = node;
-            //let frame = &mut self.frame;
             let val = node.eval(&mut self.frame, false)?;
             if i == len - 1 {
                 if dump_frame {

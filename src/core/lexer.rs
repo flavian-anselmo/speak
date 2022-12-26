@@ -125,13 +125,22 @@ pub struct Tok {
 }
 
 impl Tok {
-    fn string(&self) -> String {
+    pub fn string(&self) -> String {
         match self.kind {
-            Kind::Identifier | Kind::StringLiteral | Kind::NumberLiteral => {
+            Kind::Identifier | Kind::StringLiteral => {
                 format!(
                     "{} '{}' [{}]",
                     self.kind.string(),
                     self.str.clone().unwrap(), // safe to unwrap, types matched always have str
+                    self.position.string()
+                )
+            }
+
+            Kind::NumberLiteral => {
+                format!(
+                    "{} {} [{}]",
+                    self.kind.string(),
+                    self.num.clone().unwrap(), // safe to unwrap, types matched always have num
                     self.position.string()
                 )
             }
@@ -170,13 +179,10 @@ pub fn tokenize(
             continue;
         }
 
-        // if starts with an identation, log the identation to the token stream
-        let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
-        //let mut count = 0;
-
-        //   let mut comment = false;
         let mut entry = String::new();
         let mut last_line_column = (0, 0);
+
+        let mut buf_iter = buf.chars().into_iter().enumerate().peekable();
         while let Some((column, c)) = buf_iter.next() {
             let token_commit = |kind, tokens| {
                 commit(
@@ -247,7 +253,7 @@ pub fn tokenize(
                     }
                 }
                 ':' => {
-                    // if there is previous entry, commit it as identifier
+                    // if there is previous entry, commit it as arbitrary
                     if entry.len() > 0 {
                         commit_arbitrary(
                             entry.clone(),
@@ -270,6 +276,29 @@ pub fn tokenize(
                     token_commit(Kind::Colon, tokens);
                 }
                 '_' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                        continue;
+                    }
+
+                    if let Some((_, c)) = buf_iter.peek() {
+                        if *c != ' ' || *c != ':' {
+                            entry.push(*c);
+                            buf_iter.next();
+                            last_line_column.0 = line;
+                            last_line_column.1 = column + 1;
+                            continue;
+                        }
+                    }
+
                     token_commit(Kind::EmptyIdentifier, tokens);
                 }
                 ',' => {
@@ -309,37 +338,146 @@ pub fn tokenize(
                     last_line_column.1 = column + 1;
                 }
                 '!' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::Bang, tokens);
                 }
                 '?' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::QuestionMark, tokens);
                 }
                 '=' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::EqualOp, tokens);
                 }
                 '(' => {
                     token_commit(Kind::LeftParen, tokens);
                 }
                 ')' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::RightParen, tokens);
                 }
                 '~' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::NegationOp, tokens);
                 }
                 '-' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     if let Some((_, '>')) = buf_iter.peek() {
-                        entry.push(c);
+                        // advance iterator and commit as arrow
+                        buf_iter.next();
+                        token_commit(Kind::FunctionArrow, tokens);
                         continue;
                     }
                     token_commit(Kind::SubtractOp, tokens);
                 }
                 '+' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::AddOp, tokens);
                 }
                 '*' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
                     token_commit(Kind::MultiplyOp, tokens);
                 }
                 '/' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     if let Some((_, '/')) = buf_iter.peek() {
                         buf_iter.next(); // advance iterator to next item
                         break;
@@ -349,32 +487,78 @@ pub fn tokenize(
                     token_commit(Kind::DivideOp, tokens);
                 }
                 '%' => {
-                    token_commit(Kind::ModulusOp, tokens);
-                }
-                '&' => {
-                    token_commit(Kind::LogicalAndOp, tokens);
-                }
-                '|' => {
-                    token_commit(Kind::LogicalOrOp, tokens);
-                }
-                '>' => {
-                    // if the previous entry has '-', this is a function arrow
-                    if entry == "-" {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
                         commit_arbitrary(
-                            entry.clone() + ">",
+                            entry.clone(),
                             tokens,
                             &debug_lexer,
                             line,
                             col_fn(column, entry.len()),
                         )?;
-
                         entry.clear();
-                        continue;
+                    }
+
+                    token_commit(Kind::ModulusOp, tokens);
+                }
+                '&' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
+                    token_commit(Kind::LogicalAndOp, tokens);
+                }
+                '|' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
+                    token_commit(Kind::LogicalOrOp, tokens);
+                }
+                '>' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
                     }
 
                     token_commit(Kind::GreaterThanOp, tokens);
                 }
                 '<' => {
+                    // if there is previous entry, commit it as arbitrary
+                    if entry.len() > 0 {
+                        commit_arbitrary(
+                            entry.clone(),
+                            tokens,
+                            &debug_lexer,
+                            line,
+                            col_fn(column, entry.len()),
+                        )?;
+                        entry.clear();
+                    }
+
                     token_commit(Kind::LessThanOp, tokens);
                 }
                 _ => {
@@ -651,13 +835,67 @@ mod test {
             );
         }
 
+        // tokenize function call on number, as identitier and numberliteral
+        {
+            tokens.clear();
+            buf_reader = BufReader::new("sprint 10000-10".as_bytes());
+            if let Err(err) = tokenize(&mut buf_reader, &mut tokens, true) {
+                panic!("error: {}", err.message);
+            }
+
+            assert_eq!(
+                tokens[0],
+                Tok {
+                    kind: Kind::Identifier,
+                    str: Some("sprint".to_string()),
+                    num: None,
+                    position: Position { line: 1, column: 1 }
+                }
+            );
+
+            assert_eq!(
+                tokens[1],
+                Tok {
+                    kind: Kind::NumberLiteral,
+                    str: None,
+                    num: Some(10000.0),
+                    position: Position { line: 1, column: 8 }
+                }
+            );
+
+            assert_eq!(
+                tokens[2],
+                Tok {
+                    kind: Kind::SubtractOp,
+                    str: None,
+                    num: None,
+                    position: Position {
+                        line: 1,
+                        column: 13
+                    }
+                }
+            );
+
+            assert_eq!(
+                tokens[3],
+                Tok {
+                    kind: Kind::NumberLiteral,
+                    str: None,
+                    num: Some(10.0),
+                    position: Position {
+                        line: 1,
+                        column: 14
+                    }
+                }
+            );
+        }
+
         // tokenize a function signature
         {
             tokens.clear();
             buf_reader = BufReader::new("sum: a, b number -> number".as_bytes());
-            match tokenize(&mut buf_reader, &mut tokens, true) {
-                Ok(_) => (),
-                Err(e) => panic!("error: {}", e.message),
+            if let Err(err) = tokenize(&mut buf_reader, &mut tokens, true) {
+                panic!("error: {}", err.message);
             }
 
             assert_eq!(
