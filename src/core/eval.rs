@@ -1,51 +1,26 @@
-use self::value::_Value;
-
+use self::value::{Function, Value};
 use super::{
     error::{Err, ErrorReason},
-    lexer::{tokenize, Tok},
-    log::{log_debug, log_err},
-    parser::{_Node, parse},
-    runtime::{speak_len, speak_println, speak_sprint, speak_sprintf},
+    lexer::Kind,
+    parser::Node,
+    runtime::{StackFrame, VTable},
 };
-use std::{
-    collections::HashMap,
-    env, fmt,
-    fs::{self, File},
-    io::{BufReader, Bytes},
-    sync::mpsc::channel,
-};
-
-const MAX_PRINT_LEN: usize = 120;
+use std::collections::HashMap;
 
 pub mod r#type {
     #[derive(Debug, PartialEq, Eq, Clone)]
     pub enum Type {
-        // Floating point number: f64
+        /// Floating point number: f64
         Number,
 
-        // Boolean type.
+        /// Boolean type.
         Bool,
 
-        // String type.
+        /// String type.
         String,
-
-        // Array type.
-        Array { r#type: Box<Type> },
-
-        // Map type.
-        Map,
 
         // Function type.
         Function,
-
-        // Interface type.
-        Interface,
-
-        // Struct type.
-        Struct,
-
-        // Enum type.
-        Enum,
 
         // Empty type.
         Empty,
@@ -58,12 +33,7 @@ pub mod r#type {
                 Type::Number => "number".to_string(),
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
-                Type::Array { r#type } => format!("[]{}", r#type.string()),
-                Type::Map => "map".to_string(),
                 Type::Function => "function".to_string(),
-                Type::Interface => "interface".to_string(),
-                Type::Struct => "struct".to_string(),
-                Type::Enum => "enum".to_string(),
                 Type::Empty => "empty".to_string(),
             }
         }
@@ -71,16 +41,18 @@ pub mod r#type {
 }
 
 pub mod value {
-    use crate::core::{error::Err, parser::_Node};
-    use std::fmt::{self, Debug};
-
-    use super::{r#type::Type, Context, NativeFn, VTable, MAX_PRINT_LEN};
+    use super::r#type::Type;
+    use crate::core::{
+        parser::Node,
+        runtime::{NativeFn, VTable, MAX_PRINT_LEN},
+    };
+    use std::fmt::Debug;
 
     /// Value represents any value in the Speak programming language.
     /// Each value corresponds to some primitive or object value created
     /// during the execution of a Speak program.
     #[derive(Debug, Clone)]
-    pub enum _Value {
+    pub enum Value {
         Number(f64),
         Bool(bool),
         String(String),
@@ -106,8 +78,7 @@ pub mod value {
     #[derive(Debug, Clone)]
     pub struct Function {
         // defn must be of variant `FunctionLiteral`.
-        pub defn: Box<_Node>,
-        // pub parent_frame: Rc<RefCell<StackFrame>>, TODO: implement this
+        pub defn: Box<Node>,
     }
 
     impl Function {
@@ -121,349 +92,786 @@ pub mod value {
         }
     }
 
-    impl _Value {
+    impl Value {
         pub fn value_type(&self) -> Type {
             match self {
-                _Value::Number(_) => Type::Number,
-                _Value::Bool(_) => Type::Bool,
-                _Value::String(_) => Type::String,
-                _Value::Function { .. }
-                | _Value::FunctionCallThunk { .. }
-                | _Value::NativeFunction(..) => Type::Function,
-                _Value::Empty => Type::Empty,
+                Value::Number(_) => Type::Number,
+                Value::Bool(_) => Type::Bool,
+                Value::String(_) => Type::String,
+                Value::Function { .. }
+                | Value::FunctionCallThunk { .. }
+                | Value::NativeFunction(..) => Type::Function,
+                Value::Empty => Type::Empty,
             }
         }
 
-        pub fn equals(&self, value: _Value) -> bool {
+        pub fn equals(&self, value: Value) -> bool {
             match (self, value) {
-                (_Value::Number(a), _Value::Number(b)) => a == &b,
-                (_Value::Bool(a), _Value::Bool(b)) => a == &b,
-                (_Value::String(a), _Value::String(b)) => a == &b,
-                (_Value::Empty, _) | (_, _Value::Empty) => true,
+                (Value::Number(a), Value::Number(b)) => a == &b,
+                (Value::Bool(a), Value::Bool(b)) => a == &b,
+                (Value::String(a), Value::String(b)) => a == &b,
+                (Value::Empty, _) | (_, Value::Empty) => true,
                 _ => false, // types here are incomparable
             }
         }
 
         pub fn string(&self) -> String {
             match self {
-                _Value::Number(value) => value.to_string(),
-                _Value::Bool(value) => value.to_string(),
-                _Value::String(value) => value.to_string(),
-                _Value::Function(func) => func.string(),
-                _Value::NativeFunction(func) => format!("Native Function ({})", func.0),
-                _Value::FunctionCallThunk { func, .. } => {
+                Value::Number(value) => value.to_string(),
+                Value::Bool(value) => value.to_string(),
+                Value::String(value) => value.to_string(),
+                Value::Function(func) => func.string(),
+                Value::NativeFunction(func) => format!("Native Function ({})", func.0),
+                Value::FunctionCallThunk { func, .. } => {
                     format!("Thunk of ({})", func.string())
                 }
-                _Value::Empty => "()".to_string(),
+                Value::Empty => "()".to_string(),
             }
         }
     }
 }
 
-#[derive(Clone)]
-pub struct NativeFunction<F: Fn(&Context, &[_Value]) -> Result<_Value, Err>>(String, F);
-type NativeFn = NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>;
-
-impl fmt::Debug for NativeFn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NativeFunction {{ name: {} }}", self.0)
-    }
-}
-
-/// This loads up the built-in functions which come with the interpreter.
-pub fn load_func(stack: &mut StackFrame) {
-    if let StackFrame::Frame { item, next: _ } = stack {
-        item.set(
-            "println".to_string(),
-            _Value::NativeFunction(NativeFunction("println".to_string(), speak_println)),
-        );
-        item.set(
-            "sprint".to_string(),
-            _Value::NativeFunction(NativeFunction("sprint".to_string(), speak_sprint)),
-        );
-        item.set(
-            "sprintf".to_string(),
-            _Value::NativeFunction(NativeFunction("println".to_string(), speak_sprintf)),
-        );
-        item.set(
-            "len".to_string(),
-            _Value::NativeFunction(NativeFunction("len".to_string(), speak_len)),
-        );
-
-        return; //Ok(());
-    }
-
-    log_err(&ErrorReason::Assert, "Stackframe provided is Nil")
-}
-
-/// This is a global execution context for the lifetime of the Speak program.
-#[derive(Debug)]
-pub struct Engine {
-    pub fatal_error: bool,
-    pub debug_lex: bool,
-    pub debug_parse: bool,
-    pub debug_dump: bool,
-    // pub native_functions:
-    //     HashMap<String, NativeFunction<fn(&Context, &[_Value]) -> Result<_Value, Err>>>,
-}
-
-impl Default for Engine {
-    fn default() -> Self {
-        Self {
-            fatal_error: true,
-            debug_lex: false,
-            debug_parse: true,
-            debug_dump: false,
-            // native_functions: load_func(),
-        }
-    }
-}
-
-/// ValueTable is used anytime a map of names/labels to Speak Values is needed,
-/// and is notably used to represent stack frames/heaps and CompositeValue dictionaries.
-#[derive(Debug, Clone)]
-pub struct VTable(HashMap<String, _Value>);
-
-impl VTable {
-    fn new(map: HashMap<String, _Value>) -> Self {
-        Self(map)
-    }
-
-    fn get(&self, name: &str) -> Option<&_Value> {
-        self.0.get(name)
-    }
-
-    fn set(&mut self, key: String, value: _Value) {
-        self.0.insert(key, value);
-    }
-}
-
-/// StackFrame represents the heap of variables local to a particular function call frame,
-/// and recursively references other parent StackFrames internally.
-#[derive(Debug)]
-pub enum StackFrame {
-    Frame { item: VTable, next: Box<StackFrame> },
-    Nil,
-}
-
-impl StackFrame {
-    /// Creates a new stack frame with the provided value table and parent stack frame.
-    fn new(value_table: VTable, parent: StackFrame) -> Self {
-        Self::Frame {
-            item: value_table,
-            next: Box::new(parent),
-        }
-    }
-
-    /// Get a value from the current stack frame chain.
-    pub fn get(&self, name: &str) -> Option<&_Value> {
-        let mut frame = self;
-        while let StackFrame::Frame { item, next } = frame {
-            match item.get(name) {
-                Some(val) => return Some(val),
-                None => {
-                    frame = next;
-                }
-            }
-        }
-
-        return None;
-    }
-
-    /// Sets a value to the provided stack frame.
-    pub fn set(&mut self, name: String, val: _Value) {
-        if let StackFrame::Frame { item, next: _ } = self {
-            item.set(name, val)
-        }
-    }
-
-    /// Updates a value in the stack frame chain.
-    fn up(&mut self, name: String, val: _Value) {
-        let mut frame = self;
-        while let StackFrame::Frame { item, next } = frame {
-            match item.get(&name) {
-                Some(_) => {
-                    item.0.insert(name, val);
-                    return;
-                }
-                None => {
-                    frame = next;
-                }
-            }
-        }
-
-        log_err(
-            &ErrorReason::Assert,
-            &format!(
-                "StackFrame.up expected to find variable '{}' in frame but did not",
-                name
-            ),
-        );
-    }
-
-    /// Provides the vtable to the function provided for mutation.
-    fn mutate<F: FnMut(&mut VTable) -> Result<(), Err>>(&mut self, mut f: F) -> Result<(), Err> {
+impl Node {
+    pub fn eval(&mut self, stack: &mut StackFrame, allow_thunk: bool) -> Result<Value, Err> {
         match self {
-            StackFrame::Frame { item, next: _ } => f(item),
-            StackFrame::Nil => Err(Err {
-                message: "frame not present".to_string(),
-                reason: ErrorReason::System,
-            }),
-        }
-    }
-
-    /// dumps the stack frame chain to return out.
-    fn string(&self) -> Option<String> {
-        if let StackFrame::Frame { item, next } = self {
-            let mut entries = Vec::new();
-            for (k, v) in &item.0 {
-                let mut v_str = v.string();
-                if v_str.len() > MAX_PRINT_LEN {
-                    v_str = format!("{}...", &v_str[..MAX_PRINT_LEN])
+            Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
+            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())), // Tidy: this is a copy
+            Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())), // Tidy: this is a copy
+            Node::EmptyIdentifier { .. } => Ok(Value::Empty),
+            Node::Identifier { value, position } => {
+                if let Some(val) = stack.get(&value) {
+                    return Ok(val.clone());
                 }
-                entries.push(format!("{k} -> {v_str}"))
+                Err(Err {
+                    message: format!("{} is not defined [{}]", value, position.string()),
+                    reason: ErrorReason::System,
+                })
             }
-
-            return Some(format!(
-                "{{\n\t{}\n}} -parent-> {:?}",
-                entries.join("\n\t"),
-                next
-            ));
-        }
-
-        return None;
-    }
-}
-
-/// Context represents a single, isolated execution context with its global heap,
-/// imports, call stack, and cwd (working directory).
-#[derive(Debug)]
-pub struct Context {
-    /// cwd is an always-absolute path to current working dir (of module system)
-    cwd: Option<String>,
-    /// The currently executing file's path, if any
-    file: Option<String>,
-    /// Frame represents the Context's global heap
-    frame: StackFrame,
-}
-
-impl Context {
-    fn new() -> Self {
-        let mut frame = StackFrame::new(VTable(HashMap::new()), StackFrame::Nil);
-
-        // load builtin-functions
-        load_func(&mut frame);
-
-        Context {
-            cwd: None,
-            file: None,
-            frame,
-        }
-    }
-
-    fn reset_wd(&mut self) {
-        self.cwd = Some(env::current_dir().unwrap().to_str().unwrap().to_string());
-    }
-
-    pub fn dump(&self) {
-        if let Some(s) = self.frame.string() {
-            log_debug(&format!("frame_dump:\n{}", s));
-        }
-    }
-
-    // Takes a channel of Nodes to evaluate, and executes the Speak programs defined
-    // in the syntax tree. Returning the last value of the last expression in the AST,
-    // or an error to stderr if there was a runtime error.
-    pub fn eval(&mut self, nodes: Vec<_Node>, dump_frame: bool) -> Result<_Value, Err> {
-        let len = nodes.len();
-        let mut last_val = _Value::Empty;
-
-        let mut iter = nodes.into_iter().enumerate();
-        while let Some((i, node)) = iter.next() {
-            let mut node = node;
-            match node.eval(&mut self.frame, false) {
-                Ok(val) => {
-                    if i == len - 1 {
-                        if dump_frame {
-                            self.dump();
+            Node::UnaryExpression {
+                operator,
+                operand,
+                position,
+            } => {
+                let mut_operand = |op: &mut Node| -> Result<Value, Err> {
+                    match op {
+                        Node::NumberLiteral { value, .. } => {
+                            *value = -*value;
+                            Ok(Value::Number(value.clone()))
                         }
-                        last_val = val;
+                        Node::BoolLiteral { value, .. } => {
+                            *value = !*value;
+                            Ok(Value::Bool(value.clone()))
+                        }
+                        _ => Err(Err {
+                            message: format!(
+                                "invalid unary operand {}, at {}",
+                                op.string(),
+                                position.string()
+                            ),
+                            reason: ErrorReason::Runtime,
+                        }),
+                    }
+                };
+
+                let cl_operand = operand.as_ref();
+                match operator {
+                    Kind::NegationOp => match cl_operand {
+                        Node::NumberLiteral { .. } | Node::BoolLiteral { .. } => {
+                            Ok(mut_operand(operand)?)
+                        }
+
+                        Node::Identifier { value, position } => {
+                            if let Some(_val) = stack.get(value) {
+                                return Ok(mut_operand(operand)?);
+                            }
+                            return Err(Err {
+                                message: format!(
+                                    "{} is not defined [{}]",
+                                    value,
+                                    position.string()
+                                ),
+                                reason: ErrorReason::System,
+                            });
+                        }
+                        _ => {
+                            return Err(Err {
+                                message: format!(
+                                    "invalid unary operand {}, at {}",
+                                    operand.string(),
+                                    position.string()
+                                ),
+                                reason: ErrorReason::Syntax,
+                            })
+                        }
+                    },
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "invalid unary operator {}, at {}",
+                                operator.string(),
+                                position.string()
+                            ),
+                            reason: ErrorReason::Syntax,
+                        });
                     }
                 }
-                Err(err) => {
-                    log_err(&ErrorReason::Assert, &format!("eval error: {:?}", err));
-                    if dump_frame {
-                        self.dump();
+            }
+            Node::BinaryExpression { .. } => eval_binary_expr_node(&self, stack, &allow_thunk),
+            Node::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
+                let mut arg_results = Vec::new();
+                for arg in arguments {
+                    arg_results.push(arg.eval(stack, false)?);
+                }
+
+                let fn_value = &function.eval(stack, false)?;
+                eval_speak_function(stack, fn_value, allow_thunk, &arg_results)
+            }
+            Node::FunctionLiteral { .. } => Ok(Value::Function(Function {
+                defn: Box::new(self.clone()),
+            })),
+            Node::IfExpr { .. } => eval_if_expr_node(&self, stack, allow_thunk),
+        }
+    }
+}
+
+fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> Result<Value, Err> {
+    if let Node::IfExpr {
+        condition,
+        on_true,
+        on_false,
+        ..
+    } = node
+    {
+        // assert that condition evaluates to boolean value
+        let mut condition = condition.as_ref().clone();
+        match condition.eval(stack, allow_thunk.clone())? {
+            Value::Bool(val) => {
+                if val {
+                    match on_true {
+                        Some(on_true) => {
+                            let mut on_true = on_true.as_ref().clone();
+                            return on_true.eval(stack, allow_thunk);
+                        }
+                        None => return Ok(Value::Empty),
+                    }
+                }
+                match on_false {
+                    Some(on_false) => {
+                        let mut on_false = on_false.as_ref().clone();
+                        return on_false.eval(stack, allow_thunk);
+                    }
+                    None => return Ok(Value::Empty),
+                }
+            }
+            _ => {
+                return Err(Err {
+                    message: format!(
+                        "the codition, ({}) at [{}], does not evaluate to bool value",
+                        condition.string(),
+                        node.position().string()
+                    ),
+                    reason: ErrorReason::Runtime,
+                });
+            }
+        }
+    }
+
+    return Err(Err {
+        reason: ErrorReason::System,
+        message: "".to_string(),
+    });
+}
+
+fn eval_binary_expr_node(
+    node: &Node,
+    stack: &mut StackFrame,
+    _allow_thunk: &bool,
+) -> Result<Value, Err> {
+    if let Node::BinaryExpression {
+        operator,
+        left_operand,
+        right_operand,
+        position,
+    } = node
+    {
+        let mut left_right = || -> Result<(Value, Value), Err> {
+            Ok((
+                to_value(left_operand.as_ref().clone(), stack)?,
+                to_value(right_operand.as_ref().clone(), stack)?,
+            ))
+        };
+
+        match operator {
+            Kind::AssignOp => {
+                match left_operand.as_ref() {
+                    Node::Identifier { value, .. } => {
+                        // right operand node must evaluate to a value
+                        let right_value = to_value(right_operand.as_ref().clone(), stack)?;
+                        stack.set(value.clone(), right_value.clone());
+                        return Ok(right_value);
                     }
 
-                    return Err(err);
+                    Node::BinaryExpression {
+                        operator: _l_operator,
+                        left_operand: _l_left_operand,
+                        right_operand: _l_right_operand,
+                        position: _l_position,
+                    } => {
+                        if let Kind::AccessorOp = _l_operator {
+                            unimplemented!() // method access
+                        } else {
+                            return Err(Err {
+                                message: format!(
+                                    "cannot assing value to non-identifier {}, at [{}]",
+                                    _l_left_operand.string(),
+                                    left_operand.position().string(),
+                                ),
+                                reason: ErrorReason::Runtime,
+                            });
+                        }
+                    }
+
+                    _ => {
+                        let mut left_operand = left_operand.as_ref().clone();
+                        return Err(Err {
+                            message: format!(
+                                "cannot assing value to non-identifier {}, at [{}]",
+                                left_operand.eval(stack, false)?.string(),
+                                left_operand.position().string()
+                            ),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
                 }
+            }
+
+            Kind::AccessorOp => {
+                unimplemented!() // method access
+            }
+
+            Kind::AddOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            return Ok(Value::Number(left_num + right_num));
+                        }
+                    }
+
+                    Value::String(left_str) => {
+                        if let Value::String(right_str) = right_value {
+                            return Ok(Value::String(format!("{}{}", left_str, right_str)));
+                        }
+                    }
+
+                    Value::Bool(left_bool) => {
+                        if let Value::Bool(right_bool) = right_value {
+                            return Ok(Value::Bool(left_bool || right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support addition, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            ),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::SubtractOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            return Ok(Value::Number(left_num - right_num));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support subtraction, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::MultiplyOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            return Ok(Value::Number(left_num * right_num));
+                        }
+                    }
+
+                    Value::Bool(left_bool) => {
+                        if let Value::Bool(right_bool) = right_value {
+                            return Ok(Value::Bool(left_bool && right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support multiplication, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::DivideOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            if right_num == 0f64 {
+                                return Err(Err {
+                                    message: format!(
+                                        "decision by zero error [{}]",
+                                        right_operand.position().string()
+                                    )
+                                    .to_string(),
+                                    reason: ErrorReason::Runtime,
+                                });
+                            }
+                            return Ok(Value::Number(left_num / right_num));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support division, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::ModulusOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            if right_num == 0f64 {
+                                return Err(Err {
+                                    message: format!(
+                                        "decision by zero error in modulus [{}]",
+                                        right_operand.position().string()
+                                    )
+                                    .to_string(),
+                                    reason: ErrorReason::Runtime,
+                                });
+                            }
+                            return Ok(Value::Number(left_num + right_num));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "cannot take modulus of non-integer value {}, at [{}]",
+                                right_value.string(),
+                                left_operand.position().string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::LogicalAndOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    // the LogicalAndOp will perform a bitwise and; `&`.
+                    Value::Number(left_num) => {
+                        if is_intable(&left_num) {
+                            if let Value::Number(right_num) = right_value {
+                                if is_intable(&right_num) {
+                                    return Ok(Value::Number(
+                                        (left_num as i64 & right_num as i64) as f64,
+                                    ));
+                                }
+                            }
+                        }
+
+                        return Err(Err {
+                            message: format!(
+                                "cannot take logical & of non-integer values {}, {} [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
+
+                    Value::Bool(left_bool) => {
+                        if let Value::Bool(right_bool) = right_value {
+                            return Ok(Value::Bool(left_bool && right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support bitwise or logical &, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::LogicalOrOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    // the LogicalOrOp will perform a bitwise or; `|`.
+                    Value::Number(left_num) => {
+                        if is_intable(&left_num) {
+                            if let Value::Number(right_num) = right_value {
+                                if is_intable(&right_num) {
+                                    return Ok(Value::Number(
+                                        (left_num as i64 | right_num as i64) as f64,
+                                    ));
+                                }
+                            }
+                        }
+
+                        return Err(Err {
+                            message: format!(
+                                "cannot take logical | of non-integer values {}, {} [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
+
+                    Value::Bool(left_bool) => {
+                        if let Value::Bool(right_bool) = right_value {
+                            return Ok(Value::Bool(left_bool || right_bool));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "values {} and {} do not support bitwise or logical |, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            )
+                            .to_string(),
+                            reason: ErrorReason::Syntax,
+                        })
+                    }
+                }
+            }
+
+            Kind::GreaterThanOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            return Ok(Value::Bool(left_num > right_num));
+                        }
+                    }
+
+                    Value::String(left_str) => {
+                        if let Value::String(right_str) = right_value {
+                            return Ok(Value::Bool(left_str > right_str));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            reason: ErrorReason::Runtime,
+                            message: format!(
+                                "values {} and {} do not support comparison, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            ),
+                        });
+                    }
+                }
+            }
+
+            Kind::LessThanOp => {
+                let (left_value, right_value) = left_right()?;
+                match left_value {
+                    Value::Number(left_num) => {
+                        if let Value::Number(right_num) = right_value {
+                            return Ok(Value::Bool(left_num < right_num));
+                        }
+                    }
+
+                    Value::String(left_str) => {
+                        if let Value::String(right_str) = right_value {
+                            return Ok(Value::Bool(left_str < right_str));
+                        }
+                    }
+
+                    _ => {
+                        return Err(Err {
+                            reason: ErrorReason::Runtime,
+                            message: format!(
+                                "values {} and {} do not support comparison, at [{}]",
+                                left_value.string(),
+                                right_value.string(),
+                                position.string()
+                            ),
+                        });
+                    }
+                }
+            }
+
+            Kind::EqualOp => {
+                let (left_value, right_value) = left_right()?;
+                return Ok(Value::Bool(left_value.equals(right_value)));
+            }
+
+            _ => {
+                return Err(Err {
+                    reason: ErrorReason::Assert,
+                    message: format!("unknown binary operator {}", operator.string()),
+                })
             }
         }
 
-        Ok(last_val)
+        return Err(Err {
+            reason: ErrorReason::Runtime,
+            message: format!(
+                "cannot perform op, {}, on ({}) and ({}), at [{}]",
+                operator.string(),
+                left_operand.string(),
+                right_operand.string(),
+                node.position().string()
+            ),
+        });
+    }
+    return Err(Err {
+        reason: ErrorReason::Assert,
+        message: format!("node provided is not a BinaryExprNode"),
+    });
+}
+
+// Calls into a Speak callback function synchronously.
+fn eval_speak_function(
+    stack: &mut StackFrame,
+    fn_value: &Value,
+    allow_thunk: bool,
+    args: &[Value],
+) -> Result<Value, Err> {
+    match fn_value {
+        Value::Function(func) => {
+            let mut arg_vtable = HashMap::new();
+            if let Node::FunctionLiteral { arguments, .. } = func.defn.as_ref() {
+                for (i, (arg_ident, arg_type)) in arguments.iter().enumerate() {
+                    if i < args.len() {
+                        // assert the arg value types match
+                        if args[i].value_type() != *arg_type {
+                            return Err(Err {
+                                message: format!(""),
+                                reason: ErrorReason::Runtime,
+                            });
+                        }
+
+                        arg_vtable.insert(arg_ident.clone(), args[i].clone());
+                    }
+                }
+
+                let mut return_thunk = Value::FunctionCallThunk {
+                    vt: VTable(arg_vtable),
+                    func: func.clone(),
+                };
+
+                if allow_thunk {
+                    return Ok(return_thunk);
+                }
+                return unwrap_thunk(stack, &mut return_thunk);
+            }
+
+            Err(Err {
+                message: "".to_string(),
+                reason: ErrorReason::System,
+            })
+        }
+
+        // stack is used in the mod function only to load
+        Value::NativeFunction(func) => func.1(stack, args),
+
+        _ => Err(Err {
+            message: format!(
+                "attempted to call a non-function value {} of type {}",
+                fn_value.string(),
+                fn_value.value_type().string()
+            ),
+            reason: ErrorReason::Runtime,
+        }),
+    }
+}
+
+fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err> {
+    let mut is_thunk = true;
+    let mut v = Value::Empty;
+    while is_thunk {
+        if let Value::FunctionCallThunk { func, .. } = thunk {
+            // get the function body and eval
+            if let Node::FunctionLiteral { body, .. } = func.defn.as_mut() {
+                v = body.eval(stack, true)?;
+                if let Value::FunctionCallThunk { .. } = v {
+                    is_thunk = true
+                } else {
+                    is_thunk = false
+                }
+            }
+        }
     }
 
-    /// Runs a Speak program defined by the buffer. This is the main way to invoke Speak programs
-    /// from Rust.
-    pub fn exec(&mut self, eng: &Engine, input: BufReader<&[u8]>) -> Result<_Value, Err> {
-        let (tx, rx) = channel::<Tok>();
+    Ok(v)
+}
 
-        let mut buf = input;
-        tokenize(&mut buf, &tx, eng.fatal_error, eng.debug_lex)?;
-
-        let (nodes_chan, nodes_rx) = channel::<_Node>();
-
-        parse(rx, nodes_chan, eng.fatal_error, eng.debug_parse);
-
-        self.eval(nodes_rx.iter().collect::<Vec<_Node>>(), eng.debug_dump)
+fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
+    let mut op = op;
+    match op {
+        Node::StringLiteral { value, .. } => Ok(Value::String(value)),
+        Node::NumberLiteral { value, .. } => Ok(Value::Number(value)),
+        Node::BoolLiteral { value, .. } => Ok(Value::Bool(value)),
+        Node::Identifier { value, .. } => {
+            if let Some(val) = stack.get(&value) {
+                return Ok(val.clone());
+            }
+            return Err(Err {
+                message: format!("value for identifier, {},  not found in stack", value),
+                reason: ErrorReason::Runtime,
+            });
+        }
+        Node::EmptyIdentifier { .. } => Err(Err {
+            message: format!("cannot assign an empty identifier a value"),
+            reason: ErrorReason::Runtime,
+        }),
+        Node::FunctionLiteral { .. } => Ok(Value::Function(Function { defn: Box::new(op) })),
+        Node::BinaryExpression { .. } => op.eval(stack, false),
+        Node::FunctionCall { .. } => op.eval(stack, false),
+        _ => Err(Err {
+            message: "cannot resolve to concrete value of node provided".to_string(),
+            reason: ErrorReason::System,
+        }),
     }
+}
 
-    /// Allows to Exec() a program file in a given context.
-    pub fn exec_path(&mut self, eng: &Engine, path: &str) -> Result<_Value, Err> {
-        let data = fs::read(path).expect("will resolve to the hello_world.spk file");
-        self.exec(eng, BufReader::new(&data[..]))
-    }
+fn is_intable(num: &f64) -> bool {
+    *num == num.trunc()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod test {
+    use crate::core::{
+        eval::value::Value,
+        lexer::Position,
+        parser::Node,
+        runtime::{load_builtins, Context},
+    };
 
     #[test]
-    fn test_stack_frame() {
-        let mut frame = StackFrame::new(VTable::new(HashMap::new()), StackFrame::Nil);
+    fn test_eval_speak_function() {
+        // new testing context
+        let mut ctx_test = Context::new(&true);
+        // load "println" to stack
+        _ = load_builtins(&mut ctx_test);
 
-        // test stackframe.set(), stackframe.get()
-        frame.set("a".to_string(), _Value::String("hello".to_string()));
-        assert!(frame
-            .get("a")
-            .expect("key must be present")
-            .equals(_Value::String("hello".to_string())));
+        let ident_pos = Position { line: 1, column: 1 };
+        let str_pos = Position { line: 1, column: 9 };
+        let h_str = "Hello World!";
 
-        // test stackframe.string()
-        assert_eq!(
-            frame.string().expect("frame must be present"),
-            "{\n\ta -> hello\n} -parent-> Nil".to_string()
-        );
+        // print "Hello World!" to stdout
+        // `println "Hello World!"`
+        {
+            let mut node_fn_call = Node::FunctionCall {
+                function: Box::new(Node::Identifier {
+                    value: "println".to_string(),
+                    position: ident_pos.clone(),
+                }),
+                arguments: vec![Node::StringLiteral {
+                    value: h_str.to_string(),
+                    position: str_pos.clone(),
+                }],
+                position: ident_pos.clone(),
+            };
 
-        // test stackframe.up(), stackframe.get()
-        frame.up("a".to_string(), _Value::String("mutated value".to_string()));
-        assert!(frame
-            .get("a")
-            .expect("key must be present")
-            .equals(_Value::String("mutated value".to_string())));
+            let val = node_fn_call
+                .eval(&mut ctx_test.frame, false)
+                .expect("this should resolve to empty value");
 
-        // test stackframe.get, in parent frame
-        let frame = StackFrame::Frame {
-            item: VTable::new(HashMap::new()),
-            next: Box::new(frame),
-        };
-        assert!(frame.get("a").is_some());
-        assert!(frame.get("b").is_none());
+            assert_eq!(val.string(), "()");
+        }
 
-        // ensure that built-in function println is present on context creation
-        let ctx = Context::new();
-        assert!(ctx.frame.get("println").is_some())
+        // write "Hello World!" to output
+        // `sprint "Hello World!"`
+        {
+            let mut node_fn_call = Node::FunctionCall {
+                function: Box::new(Node::Identifier {
+                    value: "sprint".to_string(),
+                    position: ident_pos.clone(),
+                }),
+                arguments: vec![Node::StringLiteral {
+                    value: h_str.to_string(),
+                    position: str_pos.clone(),
+                }],
+                position: ident_pos.clone(),
+            };
+
+            let val = node_fn_call
+                .eval(&mut ctx_test.frame, false)
+                .expect("this should resolve to a string value");
+
+            if let Value::String(_val) = val {
+                assert_eq!(_val, h_str);
+            } else {
+                panic!(
+                    "did not resolve to Value::String, value id of type {}",
+                    val.value_type().string()
+                )
+            }
+        }
     }
 }

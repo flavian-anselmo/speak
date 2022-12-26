@@ -1,23 +1,15 @@
-use crate::core::log::log_debug;
-
 use super::{
     error::{Err, ErrorReason},
-    eval::StackFrame,
-    eval::{
-        r#type::{self, Type},
-        value::{Function, _Value},
-    },
+    eval::r#type,
     lexer::{Kind, Position, Tok},
-    log::{log_err, log_safe_err},
+    log::log_interactive,
 };
-use std::{
-    fmt::Debug,
-    sync::mpsc::{Receiver, Sender},
-};
+use crate::core::log::log_debug;
+use std::fmt::Debug;
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
-#[derive(Debug, Clone)]
-pub enum _Node {
+#[derive(Debug, Clone, PartialEq)]
+pub enum Node {
     NumberLiteral {
         value: f64,
         position: Position,
@@ -39,56 +31,61 @@ pub enum _Node {
     },
     UnaryExpression {
         operator: Kind,
-        operand: Box<_Node>,
+        operand: Box<Node>,
         position: Position,
     },
     BinaryExpression {
         operator: Kind,
-        left_operand: Box<_Node>,
-        right_operand: Box<_Node>,
+        left_operand: Box<Node>,
+        right_operand: Box<Node>,
         position: Position,
     },
     FunctionCall {
-        function: Box<_Node>,
-        arguments: Vec<_Node>,
+        function: Box<Node>,
+        arguments: Vec<Node>,
         position: Position,
     },
     FunctionLiteral {
-        arguments: Vec<(r#type::Type, _Value)>,
-        body: Box<_Node>,
+        arguments: Vec<(String, r#type::Type)>, // (identifier, type)
+        body: Box<Node>,
         position: Position,
     },
 
-    IfExprNode {
-        condition: Box<_Node>,
-        clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
+    IfExpr {
+        condition: Box<Node>, // Must be BooleanExprNode or eval to value
+        on_true: Option<Box<Node>>,
+        on_false: Option<Box<Node>>,
         position: Position,
-    },
+    }, // IfExprNode {
+       //     condition: Box<_Node>,
+       //     clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
+       //     position: Position,
+       // },
 }
 
-impl _Node {
+impl Node {
     pub fn string(&self) -> String {
         match self {
-            _Node::NumberLiteral { value, .. } => value.to_string(),
-            _Node::StringLiteral { value, .. } => value.clone(),
-            _Node::BoolLiteral { value, .. } => value.to_string(),
-            _Node::EmptyIdentifier { .. } => "".to_string(),
-            _Node::Identifier { value, .. } => value.clone(),
-            _Node::UnaryExpression {
+            Node::NumberLiteral { value, .. } => value.to_string(),
+            Node::StringLiteral { value, .. } => value.clone(),
+            Node::BoolLiteral { value, .. } => value.to_string(),
+            Node::EmptyIdentifier { .. } => "".to_string(),
+            Node::Identifier { value, .. } => value.clone(),
+            Node::UnaryExpression {
                 operator, operand, ..
             } => format!("Unary {} ({})", operator.string(), operand.string()),
-            _Node::BinaryExpression {
+            Node::BinaryExpression {
                 operator,
-                left_operand: leftOperand,
-                right_operand: rightOperand,
+                left_operand,
+                right_operand,
                 ..
             } => format!(
                 "Binary {} ({}, {})",
                 operator.string(),
-                leftOperand.string(),
-                rightOperand.string()
+                left_operand.string(),
+                right_operand.string()
             ),
-            _Node::FunctionCall {
+            Node::FunctionCall {
                 function,
                 arguments,
                 ..
@@ -100,7 +97,7 @@ impl _Node {
                 }
                 format!("Call ({}) on ({})", function.string(), args)
             }
-            _Node::FunctionLiteral {
+            Node::FunctionLiteral {
                 arguments,
                 body: _,
                 position,
@@ -109,15 +106,17 @@ impl _Node {
                 .fold(format!("Function ({}):", position.string()), |acc, arg| {
                     format!("{}, {}", acc, arg.1.string())
                 }),
-
-            _Node::IfExprNode {
-                condition, clauses, ..
+            Node::IfExpr {
+                condition,
+                on_true,
+                on_false,
+                position,
             } => {
-                let mut s = format!("If ({})", condition.string());
-                if let Some(true_clause) = &clauses.0 {
+                let mut s = format!("If ({}): ({})", position.string(), condition.string());
+                if let Some(true_clause) = &on_true {
                     s.push_str(&format!("? ({})", true_clause.string()));
                 }
-                if let Some(false_clause) = &clauses.1 {
+                if let Some(false_clause) = &on_false {
                     s.push_str(&format!("! ({})", false_clause.string()));
                 }
                 s
@@ -127,573 +126,35 @@ impl _Node {
 
     pub fn position(&self) -> &Position {
         match self {
-            _Node::NumberLiteral { position, .. } => position,
-            _Node::StringLiteral { position, .. } => position,
-            _Node::BoolLiteral { position, .. } => position,
-            _Node::EmptyIdentifier { position } => position,
-            _Node::Identifier { position, .. } => position,
-            _Node::UnaryExpression { position, .. } => position,
-            _Node::BinaryExpression { position, .. } => position,
-            _Node::FunctionCall { position, .. } => position,
-            _Node::FunctionLiteral { position, .. } => position,
-            _Node::IfExprNode { position, .. } => position,
+            Node::NumberLiteral { position, .. } => position,
+            Node::StringLiteral { position, .. } => position,
+            Node::BoolLiteral { position, .. } => position,
+            Node::EmptyIdentifier { position } => position,
+            Node::Identifier { position, .. } => position,
+            Node::UnaryExpression { position, .. } => position,
+            Node::BinaryExpression { position, .. } => position,
+            Node::FunctionCall { position, .. } => position,
+            Node::FunctionLiteral { position, .. } => position,
+            Node::IfExpr { position, .. } => position,
         }
-    }
-
-    pub fn eval(&mut self, stack: &mut StackFrame, allow_thunk: bool) -> Result<_Value, Err> {
-        match self {
-            _Node::NumberLiteral { value, .. } => Ok(_Value::Number(*value)),
-            _Node::StringLiteral { value, .. } => Ok(_Value::String(value.clone())), // Tidy: this is a copy
-            _Node::BoolLiteral { value, .. } => Ok(_Value::Bool(value.clone())), // Tidy: this is a copy
-            _Node::EmptyIdentifier { .. } => Ok(_Value::Empty),
-            _Node::Identifier { value, position } => {
-                if let Some(val) = stack.get(&value) {
-                    return Ok(val.clone());
-                }
-                Err(Err {
-                    message: format!("{} is not defined [{}]", value, position.string()),
-                    reason: ErrorReason::System,
-                })
-            }
-            _Node::UnaryExpression {
-                operator,
-                operand,
-                position,
-            } => {
-                let mut_operand = |op: &mut _Node| -> Result<_Value, Err> {
-                    match op {
-                        _Node::NumberLiteral { value, .. } => {
-                            *value = -*value;
-                            Ok(_Value::Number(value.clone()))
-                        }
-                        _Node::BoolLiteral { value, .. } => {
-                            *value = !*value;
-                            Ok(_Value::Bool(value.clone()))
-                        }
-                        _ => unimplemented!("should not evalute to a identifier"),
-                    }
-                    // Ok(())
-                };
-
-                let cl_operand = operand.as_ref();
-                match operator {
-                    Kind::NegationOp => match cl_operand {
-                        _Node::NumberLiteral { .. } | _Node::BoolLiteral { .. } => {
-                            Ok(mut_operand(operand)?)
-                        }
-
-                        _Node::Identifier { value, position } => {
-                            if let Some(val) = stack.get(value) {
-                                return Ok(mut_operand(operand)?);
-                            }
-                            return Err(Err {
-                                message: format!(
-                                    "{} is not defined [{}]",
-                                    value,
-                                    position.string()
-                                ),
-                                reason: ErrorReason::System,
-                            });
-                        }
-                        _ => {
-                            return Err(Err {
-                                message: format!(
-                                    "invalid unary operand {}, at {}",
-                                    operand.string(),
-                                    position.string()
-                                ),
-                                reason: ErrorReason::Syntax,
-                            })
-                        }
-                    },
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "invalid unary operator {}, at {}",
-                                operator.string(),
-                                position.string()
-                            ),
-                            reason: ErrorReason::Syntax,
-                        });
-                    }
-                }
-            }
-            _Node::BinaryExpression { .. } => eval_binary_expr_node(&self, stack, &allow_thunk),
-            _Node::FunctionCall {
-                function,
-                arguments,
-                position,
-            } => {
-                let mut arg_results = Vec::new();
-                for arg in arguments {
-                    arg_results.push(arg.eval(stack, false)?);
-                }
-
-                eval_speak_function(&function.eval(stack, false)?, allow_thunk, &arg_results)
-            }
-            _Node::FunctionLiteral {
-                arguments,
-                body,
-                position,
-            } => Ok(_Value::Function(Function {
-                defn: Box::new(self.clone()),
-            })),
-
-            _Node::IfExprNode {
-                condition,
-                clauses,
-                position,
-            } => {
-                unimplemented!()
-            }
-        }
-    }
-}
-
-fn eval_binary_expr_node(
-    node: &_Node,
-    stack: &mut StackFrame,
-    allow_thunk: &bool,
-) -> Result<_Value, Err> {
-    if let _Node::BinaryExpression {
-        operator,
-        left_operand,
-        right_operand,
-        position,
-    } = node
-    {
-        let mut left_right = || -> Result<(_Value, _Value), Err> {
-            Ok((
-                to_value(left_operand, stack)?,
-                to_value(right_operand, stack)?,
-            ))
-        };
-
-        match operator {
-            Kind::AssignOp => {
-                match left_operand.as_ref() {
-                    _Node::Identifier { value, .. } => {
-                        // right operand node must evaluate to a value
-                        let right_value = to_value(right_operand, stack)?;
-                        stack.set(value.clone(), right_value.clone());
-                        return Ok(right_value);
-                    }
-
-                    _Node::BinaryExpression {
-                        operator: l_operator,
-                        left_operand: l_left_operand,
-                        right_operand: l_right_operand,
-                        position: l_position,
-                    } => {
-                        unimplemented!() // method access
-                    }
-
-                    _ => {
-                        let mut left_operand = left_operand.as_ref().clone();
-                        return Err(Err {
-                            message: format!(
-                                "cannot assing value to non-identifier {}, at [{}]",
-                                left_operand.eval(stack, false)?.string(),
-                                left_operand.position().string()
-                            ),
-                            reason: ErrorReason::Runtime,
-                        });
-                    }
-                }
-            }
-
-            Kind::AccessorOp => {
-                todo!()
-            }
-
-            Kind::AddOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            return Ok(_Value::Number(left_num + right_num));
-                        }
-                    }
-
-                    _Value::String(left_str) => {
-                        if let _Value::String(right_str) = right_value {
-                            return Ok(_Value::String(format!("{}{}", left_str, right_str)));
-                        }
-                    }
-
-                    _Value::Bool(left_bool) => {
-                        if let _Value::Bool(right_bool) = right_value {
-                            return Ok(_Value::Bool(left_bool || right_bool));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "values {} and {} do not support addition, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            ),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::SubtractOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            return Ok(_Value::Number(left_num - right_num));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "values {} and {} do not support subtraction, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::MultiplyOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            return Ok(_Value::Number(left_num * right_num));
-                        }
-                    }
-
-                    _Value::Bool(left_bool) => {
-                        if let _Value::Bool(right_bool) = right_value {
-                            return Ok(_Value::Bool(left_bool && right_bool));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "values {} and {} do not support multiplication, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::DivideOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            if right_num == 0f64 {
-                                return Err(Err {
-                                    message: format!(
-                                        "decision by zero error [{}]",
-                                        right_operand.position().string()
-                                    )
-                                    .to_string(),
-                                    reason: ErrorReason::Runtime,
-                                });
-                            }
-                            return Ok(_Value::Number(left_num / right_num));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "values {} and {} do not support division, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::ModulusOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            if right_num == 0f64 {
-                                return Err(Err {
-                                    message: format!(
-                                        "decision by zero error in modulus [{}]",
-                                        right_operand.position().string()
-                                    )
-                                    .to_string(),
-                                    reason: ErrorReason::Runtime,
-                                });
-                            }
-                            return Ok(_Value::Number(left_num + right_num));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "cannot take modulus of non-integer value {}, at [{}]",
-                                right_value.string(),
-                                left_operand.position().string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::LogicalAndOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    // the LogicalAndOp will perform a bitwise and; `&`.
-                    _Value::Number(left_num) => {
-                        if is_intable(&left_num) {
-                            if let _Value::Number(right_num) = right_value {
-                                if is_intable(&right_num) {
-                                    return Ok(_Value::Number(
-                                        (left_num as i64 & right_num as i64) as f64,
-                                    ));
-                                }
-                            }
-                        }
-
-                        return Err(Err {
-                            message: format!(
-                                "cannot take logical & of non-integer values {}, {} [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Runtime,
-                        });
-                    }
-
-                    _Value::Bool(left_bool) => {
-                        if let _Value::Bool(right_bool) = right_value {
-                            return Ok(_Value::Bool(left_bool && right_bool));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "values {} and {} do not support bitwise or logical &, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::LogicalOrOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    // the LogicalOrOp will perform a bitwise or; `|`.
-                    _Value::Number(left_num) => {
-                        if is_intable(&left_num) {
-                            if let _Value::Number(right_num) = right_value {
-                                if is_intable(&right_num) {
-                                    return Ok(_Value::Number(
-                                        (left_num as i64 | right_num as i64) as f64,
-                                    ));
-                                }
-                            }
-                        }
-
-                        return Err(Err {
-                            message: format!(
-                                "cannot take logical | of non-integer values {}, {} [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Runtime,
-                        });
-                    }
-
-                    _Value::Bool(left_bool) => {
-                        if let _Value::Bool(right_bool) = right_value {
-                            return Ok(_Value::Bool(left_bool || right_bool));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            message: format!(
-                                "values {} and {} do not support bitwise or logical |, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            )
-                            .to_string(),
-                            reason: ErrorReason::Syntax,
-                        })
-                    }
-                }
-            }
-
-            Kind::GreaterThanOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            return Ok(_Value::Bool(left_num > right_num));
-                        }
-                    }
-
-                    _Value::String(left_str) => {
-                        if let _Value::String(right_str) = right_value {
-                            return Ok(_Value::Bool(left_str > right_str));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            reason: ErrorReason::Runtime,
-                            message: format!(
-                                "values {} and {} do not support comparison, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            ),
-                        });
-                    }
-                }
-            }
-
-            Kind::LessThanOp => {
-                let (left_value, right_value) = left_right()?;
-                match left_value {
-                    _Value::Number(left_num) => {
-                        if let _Value::Number(right_num) = right_value {
-                            return Ok(_Value::Bool(left_num < right_num));
-                        }
-                    }
-
-                    _Value::String(left_str) => {
-                        if let _Value::String(right_str) = right_value {
-                            return Ok(_Value::Bool(left_str < right_str));
-                        }
-                    }
-
-                    _ => {
-                        return Err(Err {
-                            reason: ErrorReason::Runtime,
-                            message: format!(
-                                "values {} and {} do not support comparison, at [{}]",
-                                left_value.string(),
-                                right_value.string(),
-                                position.string()
-                            ),
-                        });
-                    }
-                }
-            }
-
-            Kind::EqualOp => {
-                let (left_value, right_value) = left_right()?;
-                return Ok(_Value::Bool(left_value.equals(right_value)));
-            }
-
-            _ => log_err(
-                &ErrorReason::Assert,
-                &format!("unknown binary operator {}", operator.string()),
-            ),
-        }
-    }
-
-    return Err(Err {
-        reason: ErrorReason::Assert,
-        message: format!("node provided is not a BinaryExprNode",),
-    });
-}
-
-// Calls into a Speak callback function synchronously.
-fn eval_speak_function<'a>(
-    fn_value: &_Value,
-    allow_thunk: bool,
-    args: &[_Value],
-) -> Result<_Value, Err> {
-    match fn_value {
-        _Value::Function(func) => {
-            unimplemented!()
-        }
-
-        _Value::NativeFunction(func) => {
-
-            
-
-            unimplemented!()
-        }
-
-        _ => Err(Err {
-            message: format!(
-                "attempted to call a non-function value {}",
-                fn_value.string()
-            ),
-            reason: ErrorReason::Runtime,
-        }),
     }
 }
 
 /// Parses a stream of tokens into AST [`_Node`]s.
 /// This implementation is a recursive descent parser.
-pub fn parse(
-    tokens_chan: Receiver<Tok>,
-    nodes_chan: Sender<_Node>,
-    fatal_error: bool,
-    debug_parser: bool,
-) {
-    let tokens: Vec<Tok> = tokens_chan.iter().collect();
+pub fn parse(tokens: &[Tok], nodes_chan: &mut Vec<Node>, debug_parser: bool) -> Result<(), Err> {
     let (mut idx, length) = (0, tokens.len());
 
     while idx < length {
-        match parse_expression(&tokens[idx..]) {
-            Ok((node, consumed)) => {
-                if debug_parser {
-                    log_debug(&format!("parse -> {}", node.string()));
-                }
-
-                idx += consumed;
-                nodes_chan.send(node).expect("this will always be valid");
-            }
-            Err(err) => {
-                if fatal_error {
-                    log_err(&err.reason, &err.message);
-                    return;
-                }
-                log_safe_err(&err.reason, &err.message);
-                return;
-            }
+        let (node, consumed) = parse_expression(&tokens[idx..], false)?;
+        if debug_parser {
+            log_debug(&format!("parse -> {}", node.string()));
         }
+
+        idx += consumed;
+        nodes_chan.push(node);
     }
+    Ok(())
 }
 
 fn get_op_priority(t: &Tok) -> i8 {
@@ -715,7 +176,7 @@ fn get_op_priority(t: &Tok) -> i8 {
     }
 }
 
-fn isBinaryOp(t: &Tok) -> bool {
+fn is_binary_op(t: &Tok) -> bool {
     match t.kind {
         Kind::AccessorOp
         | Kind::ModulusOp
@@ -731,30 +192,21 @@ fn isBinaryOp(t: &Tok) -> bool {
     }
 }
 
-fn parse_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
-    let mut idx = 0;
+fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
+    let (atom, consumed) = parse_atom(tokens, parsing_fn_args)?;
+    if consumed == tokens.len() {
+        return Ok((atom, consumed));
+    }
 
-    let consume_dangling_separator = || {
-        if idx < tokens.len() && tokens[idx].kind == Kind::Separator {
-            idx += 1;
-        }
-    };
-
-    let (atom, consumed) = parse_atom(&tokens[idx..])?;
-    idx += consumed;
-
+    let mut idx = consumed;
     guard_unexpected_input_end(tokens, idx)?;
-
     let next_tok = &tokens[idx];
+    idx += 1;
 
     match &next_tok.kind {
-        Kind::Separator => Ok((atom, idx)), // consumed
+        Kind::RightParen | Kind::QuestionMark | Kind::Bang => Ok((atom, idx - 1)), // consumed by caller
 
-        Kind::If => {
-            let (if_expr, consumed) = parse_if_expression(&tokens[idx..])?;
-            idx += consumed;
-            Ok((if_expr, idx))
-        }
+        Kind::Separator => Ok((atom, idx)), // consumed
 
         Kind::AddOp
         | Kind::SubtractOp
@@ -768,7 +220,7 @@ fn parse_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         | Kind::EqualOp
         | Kind::AssignOp
         | Kind::AccessorOp => {
-            let (bin_expr, consumed) = parse_binary_expression(atom, next_tok, &tokens[idx..], -1)?;
+            let (bin_expr, consumed) = parse_binary_expr(atom, next_tok, &tokens[idx..], -1)?;
             idx += consumed;
             Ok((bin_expr, idx))
         }
@@ -784,20 +236,20 @@ fn parse_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
     }
 }
 
-fn parse_binary_expression(
-    left_operand: _Node,
+fn parse_binary_expr(
+    left_operand: Node,
     operator: &Tok,
     tokens: &[Tok],
     previous_priority: i8,
-) -> Result<(_Node, usize), Err> {
-    let (right_operand, mut idx) = parse_atom(&tokens[1..])?;
+) -> Result<(Node, usize), Err> {
+    let (right_operand, mut idx) = parse_atom(tokens, false)?;
 
     let mut ops = vec![operator.clone()];
     let mut nodes = vec![left_operand, right_operand];
 
     // build up a list of binary operations, with tree nodes
     // where there are higher-precedence operations
-    while tokens.len() > idx && isBinaryOp(&tokens[idx]) {
+    while tokens.len() > idx && is_binary_op(&tokens[idx]) {
         if previous_priority >= get_op_priority(&tokens[idx]) {
             // Priority is lower than the previous op, so we're done
             break;
@@ -809,7 +261,7 @@ fn parse_binary_expression(
 
             guard_unexpected_input_end(&tokens, idx)?;
 
-            let (right_atom, consumed) = parse_atom(&tokens[idx..])?;
+            let (right_atom, consumed) = parse_atom(&tokens[idx..], false)?;
             nodes.push(right_atom);
             idx += consumed;
         } else {
@@ -817,61 +269,64 @@ fn parse_binary_expression(
 
             // Priority is higher than the previous op, so we need to
             // make it right-heavy
-            let (subtree, consumed) = parse_binary_expression(
-                nodes[nodes.len() - 1].clone(),
+            let pos = nodes.len() - 1;
+            let (subtree, consumed) = parse_binary_expr(
+                nodes[pos].clone(),
                 &tokens[idx],
                 &tokens[idx + 1..],
                 get_op_priority(&ops[ops.len() - 1]),
             )?;
 
-            nodes.insert(nodes.len() - 1, subtree);
+            nodes[pos] = subtree;
             idx += consumed + 1;
         }
     }
 
     // ops, nodes -> left-biased binary expression tree
-    let mut tree = nodes.get(0).expect("this value is present").clone(); //nodes[0];
+    let mut tree = nodes[0].clone();
     let mut nodes = &nodes[1..];
 
     while ops.len() > 0 {
-        tree = _Node::BinaryExpression {
+        tree = Node::BinaryExpression {
             operator: ops[0].kind.clone(),
             left_operand: Box::new(tree),
             right_operand: Box::new(nodes[0].clone()),
             position: ops[0].position.clone(),
         };
 
-        ops.remove(0);
+        ops = ops[1..].to_vec();
         nodes = &nodes[1..];
     }
 
     Ok((tree, idx))
 }
 
-fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
+fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
     guard_unexpected_input_end(tokens, 0)?;
     let (tok, mut idx) = (&tokens[0], 1);
 
-    if tok.kind == Kind::NegationOp {
-        let (operand, consumed) = parse_atom(&tokens[idx..])?;
-
-        return Ok((
-            _Node::UnaryExpression {
-                operator: tok.kind.clone(),
-                operand: Box::new(operand),
-                position: tok.position.clone(),
-            },
-            consumed + 1,
-        ));
-    }
-
-    guard_unexpected_input_end(tokens, idx)?;
-
-    let mut atom: _Node;
+    let mut atom: Node;
     match tok.kind {
+        Kind::If => return parse_if_expr(&tokens[idx..]),
+
+        Kind::LeftParen => return parse_capsulated_expr(tokens, idx),
+
+        Kind::NegationOp => {
+            let (operand, consumed) = parse_atom(&tokens[idx..], false)?;
+
+            return Ok((
+                Node::UnaryExpression {
+                    operator: tok.kind.clone(),
+                    operand: Box::new(operand),
+                    position: tok.position.clone(),
+                },
+                consumed + 1,
+            ));
+        }
+
         Kind::NumberLiteral => {
             return Ok((
-                _Node::NumberLiteral {
+                Node::NumberLiteral {
                     value: tok.num.clone().expect("this node has this value present"),
                     position: tok.position.clone(),
                 },
@@ -881,7 +336,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
 
         Kind::StringLiteral => {
             return Ok((
-                _Node::StringLiteral {
+                Node::StringLiteral {
                     value: tok.str.clone().expect("this node has this value present"),
                     position: tok.position.clone(),
                 },
@@ -891,7 +346,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
 
         Kind::TrueLiteral => {
             return Ok((
-                _Node::BoolLiteral {
+                Node::BoolLiteral {
                     value: true,
                     position: tok.position.clone(),
                 },
@@ -901,7 +356,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
 
         Kind::FalseLiteral => {
             return Ok((
-                _Node::BoolLiteral {
+                Node::BoolLiteral {
                     value: false,
                     position: tok.position.clone(),
                 },
@@ -910,11 +365,12 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         }
 
         Kind::Identifier => {
+            guard_unexpected_input_end(tokens, idx)?;
             if tokens[idx].kind == Kind::Colon {
                 // colon after identifier means the identifier is a function literal
                 (atom, idx) = parse_function_literal(&tokens)?;
             } else {
-                atom = _Node::Identifier {
+                atom = Node::Identifier {
                     value: tok.str.clone().expect("this node has this value present"),
                     position: tok.position.clone(),
                 };
@@ -927,7 +383,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
                 (atom, idx) = parse_function_literal(&tokens)?;
             } else {
                 return Ok((
-                    _Node::EmptyIdentifier {
+                    Node::EmptyIdentifier {
                         position: tok.position.clone(),
                     },
                     idx,
@@ -935,6 +391,7 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
             }
         }
 
+        //  Kind::QuestionMark | Kind::Bang => return Ok((atom, idx - 1)), // consumed by caller
         _ => {
             return Err(Err {
                 message: format!("unexpected start of atom, found {}", tok.kind.string(),),
@@ -943,53 +400,99 @@ fn parse_atom(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         }
     }
 
-    // if previous token is identifier and next token is identifier all in one line, then this is a function call
-    while idx < tokens.len()
-        && tokens[idx - 1].kind == Kind::Identifier
-        && tokens[idx].kind == Kind::Identifier
-        && tokens[idx - 1].position.line == tokens[idx].position.line
-    {
-        let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..])?;
+    while !parsing_fn_args && idx < tokens.len() {
+        match tokens[idx].kind {
+            Kind::Identifier
+            | Kind::StringLiteral
+            | Kind::NumberLiteral
+            | Kind::TrueLiteral
+            | Kind::FalseLiteral
+            | Kind::LeftParen => {
+                let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..])?;
 
-        idx += consumed;
-        atom = _atom;
-        guard_unexpected_input_end(tokens, idx)?;
+                idx += consumed;
+                atom = _atom;
+            }
+            _ => {
+                break;
+            }
+        }
     }
 
     Ok((atom, idx))
 }
 
-fn parse_if_expression(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
-    let (tok, mut idx) = (&tokens[0], 1);
-    // if n % 2 == 0 ? = n / 2 ! = 3 * n + 1
+fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Err> {
+    // grouped expression that evals to a single expression or a function literal node
+    let (atom, consumed) = parse_expression(&tokens[idx..], false)?;
+    let idx = idx + consumed;
 
-    // check either for first occurence of ? or !, whichever comes first
-    while tokens[idx].kind != Kind::QuestionMark || tokens[idx].kind != Kind::Bang {
-        idx += 1;
+    guard_unexpected_input_end(tokens, idx)?;
+    if tokens[idx].kind != Kind::RightParen {
+        return Err(Err {
+            message: format!(
+                "the expression expected ')' after [{}]",
+                tokens[idx - 1].string()
+            ),
+            reason: ErrorReason::Syntax,
+        });
     }
-    // let (condition, consumed) = parse_expression(&tokens[idx..])?;
-    unimplemented!("parse_if_body")
+    return Ok((atom, idx + 1)); // +1 for the RightParen
 }
 
-fn parse_function_call(func: &_Node, tokens: &[Tok]) -> Result<(_Node, usize), Err> {
-    let mut idx = 1;
+fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
+    let (condition, mut idx) = parse_atom(tokens, false)?;
+    let mut if_arms = [None::<Box<Node>>, None::<Box<Node>>];
+
+    while idx < tokens.len()
+        && (tokens[idx].kind == Kind::QuestionMark || tokens[idx].kind == Kind::Bang)
+    {
+        guard_unexpected_input_end(tokens, idx + 1)?;
+
+        let (arm, consumed) = parse_atom(&tokens[idx + 1..], false)?;
+        let kind = tokens[idx].kind.clone();
+
+        idx += consumed + 1; // +1 for QuestionMark || Bang
+
+        if kind == Kind::QuestionMark {
+            if_arms[0] = Some(Box::new(arm));
+        } else {
+            if_arms[1] = Some(Box::new(arm));
+        }
+    }
+
+    let pos = condition.position();
+    Ok((
+        Node::IfExpr {
+            condition: Box::new(condition.clone()),
+            on_true: if_arms[0].clone(),
+            on_false: if_arms[1].clone(),
+            position: pos.clone(),
+        },
+        idx + 1, // +1 for If consumed by caller
+    ))
+}
+
+fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err> {
+    let mut idx = 0;
     guard_unexpected_input_end(tokens, idx)?;
 
     // args should be on the same line, or be ')'
     let mut args = Vec::new();
-    while func.position().line == tokens[idx].position.line || tokens[idx].kind != Kind::RightParen
+    while idx < tokens.len()
+        && func.position().line == tokens[idx].position.line
+        && tokens[idx].kind != Kind::RightParen
+        && tokens[idx].kind != Kind::Bang
+        && tokens[idx].kind != Kind::QuestionMark
     {
-        let (expr, consumed) = parse_expression(&tokens[idx..])?;
+        let (expr, consumed) = parse_expression(&tokens[idx..], true)?;
 
         idx += consumed;
         args.push(expr);
-
-        guard_unexpected_input_end(&tokens, idx)?;
     }
 
-    idx += 1;
     Ok((
-        _Node::FunctionCall {
+        Node::FunctionCall {
             function: Box::new(func.clone()),
             arguments: args,
             position: func.position().clone(),
@@ -998,16 +501,10 @@ fn parse_function_call(func: &_Node, tokens: &[Tok]) -> Result<(_Node, usize), E
     ))
 }
 
-fn parse_function_literal(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
+fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
     let (tok, mut idx) = (&tokens[0], 1);
     let mut arguments = Vec::new();
     guard_unexpected_input_end(tokens, idx)?;
-
-    // fizzbuzz: n int -> string
-    //  if n % 15 == 0 ? = "FizzBuzz"
-    //  if n % 3 == 0 ? = "Fizz"
-    //  if n % 5 == 0 ? = "Buzz"
-    //  = sprint n
 
     match tok.kind {
         Kind::LeftParen => {
@@ -1015,13 +512,13 @@ fn parse_function_literal(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         }
         Kind::Identifier => {
             //
-            arguments.push(_Node::Identifier {
+            arguments.push(Node::Identifier {
                 value: tok.str.clone().expect("this node has this value present"),
                 position: tok.position.clone(),
             });
         }
         Kind::EmptyIdentifier => {
-            arguments.push(_Node::EmptyIdentifier {
+            arguments.push(Node::EmptyIdentifier {
                 position: tok.position.clone(),
             });
         }
@@ -1038,13 +535,13 @@ fn parse_function_literal(tokens: &[Tok]) -> Result<(_Node, usize), Err> {
         }
     }
 
-    // guard_unexpected_input_end(tokens, idx)?;
+    guard_unexpected_input_end(tokens, idx)?;
 
-    let (body, consumed) = parse_expression(&tokens[idx..])?;
+    let (body, consumed) = parse_expression(&tokens[idx..], false)?;
     idx += consumed;
 
     Ok((
-        _Node::FunctionLiteral {
+        Node::FunctionLiteral {
             arguments: Vec::new(),
             body: Box::new(body),
             position: tok.position.clone(),
@@ -1074,45 +571,139 @@ fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {
     Ok(())
 }
 
-fn to_value(op: &_Node, stack: &mut StackFrame) -> Result<_Value, Err> {
-    match op {
-        _Node::StringLiteral { value, .. } => Ok(_Value::String(value.clone())),
-        _Node::NumberLiteral { value, .. } => Ok(_Value::Number(value.clone())),
-        _Node::BoolLiteral { value, .. } => Ok(_Value::Bool(value.clone())),
-        _Node::Identifier { value, .. } => {
-            if let Some(val) = stack.get(value) {
-                return Ok(val.clone());
-            }
-            return Err(Err {
-                message: "value not found in stack".to_string(),
-                reason: ErrorReason::Runtime,
-            });
-        }
-        _Node::EmptyIdentifier { .. } => Err(Err {
-            message: format!("cannot assign an empty identifier a value"),
-            reason: ErrorReason::Runtime,
-        }),
-        _Node::FunctionLiteral { .. } => Ok(_Value::Function(Function {
-            defn: Box::new(op.clone()),
-        })),
-        _ => Err(Err {
-            message: "cannot resolve to concrete value of node provided".to_string(),
-            reason: ErrorReason::System,
-        }),
-    }
-}
-
-fn to_function_literal(n: &_Node) -> Result<_Node, Err> {
-    unimplemented!()
-}
-
-fn is_intable(num: &f64) -> bool {
-    *num == num.trunc()
-}
-
 #[cfg(test)]
 mod test {
+    use super::parse_expression;
+    use crate::core::{
+        lexer::{Kind, Position, Tok},
+        parser::Node,
+    };
+
     // "Hello World example"
     #[test]
-    fn hello_world() {}
+    fn hello_world() {
+        let ident_pos = Position { line: 2, column: 1 };
+        let str_pos = Position { line: 2, column: 9 };
+        let tokens = [
+            Tok {
+                kind: Kind::Identifier,
+                str: Some("println".to_string()),
+                num: None,
+                position: ident_pos.clone(),
+            },
+            Tok {
+                kind: Kind::StringLiteral,
+                str: Some("Hello World!".to_string()),
+                num: None,
+                position: str_pos.clone(),
+            },
+        ];
+
+        let (res, consumed) =
+            parse_expression(&tokens, false).expect("this will return the FunctionCall node");
+        assert_eq!(2, consumed, "the number of nodes consumed");
+
+        assert_eq!(
+            Node::FunctionCall {
+                function: Box::new(Node::Identifier {
+                    value: "println".to_string(),
+                    position: ident_pos.clone()
+                }),
+                arguments: vec![Node::StringLiteral {
+                    value: "Hello World!".to_string(),
+                    position: str_pos
+                }],
+                position: ident_pos
+            },
+            res
+        );
+    }
+
+    // Binary Expression
+    #[test]
+    fn binary_expr() {
+        // 100 * 2 + 3
+        let tokens = [
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: None,
+                num: Some(100f64),
+                position: Position { line: 1, column: 8 },
+            },
+            Tok {
+                kind: Kind::MultiplyOp,
+                str: None,
+                num: None,
+                position: Position {
+                    line: 1,
+                    column: 12,
+                },
+            },
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: None,
+                num: Some(2f64),
+                position: Position {
+                    line: 1,
+                    column: 14,
+                },
+            },
+            Tok {
+                kind: Kind::AddOp,
+                str: None,
+                num: None,
+                position: Position {
+                    line: 1,
+                    column: 17,
+                },
+            },
+            Tok {
+                kind: Kind::NumberLiteral,
+                str: None,
+                num: Some(3f64),
+                position: Position {
+                    line: 1,
+                    column: 19,
+                },
+            },
+        ];
+
+        let (res, consumed) =
+            parse_expression(&tokens, false).expect("this will return the FunctionCall node");
+        assert_eq!(5, consumed, "the number of nodes consumed");
+
+        let expect = Node::BinaryExpression {
+            operator: Kind::AddOp,
+            left_operand: Box::new(Node::BinaryExpression {
+                operator: Kind::MultiplyOp,
+                left_operand: Box::new(Node::NumberLiteral {
+                    value: 100.0,
+                    position: Position { line: 1, column: 8 },
+                }),
+                right_operand: Box::new(Node::NumberLiteral {
+                    value: 2.0,
+                    position: Position {
+                        line: 1,
+                        column: 14,
+                    },
+                }),
+                position: Position {
+                    line: 1,
+                    column: 12,
+                },
+            }),
+            right_operand: Box::new(Node::NumberLiteral {
+                value: 3.0,
+                position: Position {
+                    line: 1,
+                    column: 19,
+                },
+            }),
+            position: Position {
+                line: 1,
+                column: 17,
+            },
+        };
+        assert_eq!(res, expect);
+    }
 }

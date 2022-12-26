@@ -4,23 +4,11 @@ use std::sync::mpsc::SendError;
 // binding functions may return.
 #[derive(Debug, PartialEq, Clone)]
 pub enum ErrorReason {
-    Unknown,
+    // Unknown,
     Syntax,
     Runtime,
     System,
     Assert,
-}
-
-impl ErrorReason {
-    pub fn value(&self) -> u8 {
-        match self {
-            ErrorReason::Unknown => 0,
-            ErrorReason::Syntax => 1,
-            ErrorReason::Runtime => 2,
-            ErrorReason::System => 40,
-            ErrorReason::Assert => 100,
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
