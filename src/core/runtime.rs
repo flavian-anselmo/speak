@@ -66,11 +66,7 @@ impl StackFrame {
 
     /// Sets a value to the provided stack frame.
     pub fn set(&mut self, name: String, val: Value) {
-        if let StackFrame::Frame {
-            frame: item,
-            parent_frame: _,
-        } = self
-        {
+        if let StackFrame::Frame { frame: item, .. } = self {
             item.set(name, val)
         }
     }

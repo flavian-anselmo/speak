@@ -2,6 +2,7 @@ use super::{
     error::{Err, ErrorReason},
     eval::r#type,
     lexer::{Kind, Position, Tok},
+    log::log_interactive,
 };
 use crate::core::log::log_debug;
 use std::fmt::Debug;
@@ -203,7 +204,7 @@ fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usiz
     idx += 1;
 
     match &next_tok.kind {
-        Kind::RightParen => Ok((atom, idx - 1)), // consumed by caller
+        Kind::RightParen | Kind::QuestionMark | Kind::Bang => Ok((atom, idx - 1)), // consumed by caller
 
         Kind::Separator => Ok((atom, idx)), // consumed
 
@@ -306,7 +307,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
 
     let mut atom: Node;
     match tok.kind {
-        Kind::If => return parse_if_expr(tokens),
+        Kind::If => return parse_if_expr(&tokens[idx..]),
 
         Kind::LeftParen => return parse_capsulated_expr(tokens, idx),
 
@@ -390,6 +391,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
             }
         }
 
+        //  Kind::QuestionMark | Kind::Bang => return Ok((atom, idx - 1)), // consumed by caller
         _ => {
             return Err(Err {
                 message: format!("unexpected start of atom, found {}", tok.kind.string(),),
@@ -440,22 +442,23 @@ fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Er
 
 fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
     let (condition, mut idx) = parse_atom(tokens, false)?;
-
     let mut if_arms = [None::<Box<Node>>, None::<Box<Node>>];
+
     while idx < tokens.len()
         && (tokens[idx].kind == Kind::QuestionMark || tokens[idx].kind == Kind::Bang)
     {
         guard_unexpected_input_end(tokens, idx + 1)?;
-        let (arm, consumed) = parse_atom(&tokens[idx + 1..], false)?;
 
-        // arm assignment; not checking for overwrites
-        if tokens[idx].kind == Kind::QuestionMark {
+        let (arm, consumed) = parse_atom(&tokens[idx + 1..], false)?;
+        let kind = tokens[idx].kind.clone();
+
+        idx += consumed + 1; // +1 for QuestionMark || Bang
+
+        if kind == Kind::QuestionMark {
             if_arms[0] = Some(Box::new(arm));
         } else {
-            if_arms[1] = Some(Box::new(arm))
+            if_arms[1] = Some(Box::new(arm));
         }
-
-        idx += consumed;
     }
 
     let pos = condition.position();
@@ -466,7 +469,7 @@ fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
             on_false: if_arms[1].clone(),
             position: pos.clone(),
         },
-        idx,
+        idx + 1, // +1 for If consumed by caller
     ))
 }
 
@@ -479,6 +482,8 @@ fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err
     while idx < tokens.len()
         && func.position().line == tokens[idx].position.line
         && tokens[idx].kind != Kind::RightParen
+        && tokens[idx].kind != Kind::Bang
+        && tokens[idx].kind != Kind::QuestionMark
     {
         let (expr, consumed) = parse_expression(&tokens[idx..], true)?;
 
