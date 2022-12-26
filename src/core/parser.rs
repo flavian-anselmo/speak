@@ -2,9 +2,8 @@ use super::{
     error::{Err, ErrorReason},
     eval::r#type,
     lexer::{Kind, Position, Tok},
-    log::log_interactive,
+    log::{log_debug, log_interactive},
 };
-use crate::core::log::log_debug;
 use std::fmt::Debug;
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
@@ -50,17 +49,12 @@ pub enum Node {
         body: Box<Node>,
         position: Position,
     },
-
     IfExpr {
-        condition: Box<Node>, // Must be BooleanExprNode or eval to value
+        condition: Box<Node>,
         on_true: Option<Box<Node>>,
         on_false: Option<Box<Node>>,
         position: Position,
-    }, // IfExprNode {
-       //     condition: Box<_Node>,
-       //     clauses: (Option<Box<_Node>>, Option<Box<_Node>>), // (true, false)
-       //     position: Position,
-       // },
+    },
 }
 
 impl Node {
@@ -92,7 +86,7 @@ impl Node {
             } => {
                 let mut args = String::new();
                 for arg in arguments {
-                    args.push_str(&arg.string());
+                    args.push_str(&format!("({})", arg.string()));
                     args.push_str(", ");
                 }
                 format!("Call ({}) on ({})", function.string(), args)
@@ -225,14 +219,20 @@ fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usiz
             Ok((bin_expr, idx))
         }
 
-        _ => Err(Err {
-            message: format!(
-                "unexpected token {} at {}, following an expression",
-                next_tok.kind.string(),
-                next_tok.position.string()
-            ),
-            reason: ErrorReason::Syntax,
-        }),
+        _ => {
+            if parsing_fn_args {
+                return Ok((atom, idx - 1));
+            }
+
+            Err(Err {
+                message: format!(
+                    "unexpected token {} at {}, following an expression",
+                    next_tok.kind.string(),
+                    next_tok.position.string()
+                ),
+                reason: ErrorReason::Syntax,
+            })
+        }
     }
 }
 
@@ -365,8 +365,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
         }
 
         Kind::Identifier => {
-            guard_unexpected_input_end(tokens, idx)?;
-            if tokens[idx].kind == Kind::Colon {
+            if idx < tokens.len() && tokens[idx].kind == Kind::Colon {
                 // colon after identifier means the identifier is a function literal
                 (atom, idx) = parse_function_literal(&tokens)?;
             } else {
@@ -441,12 +440,21 @@ fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Er
 }
 
 fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
-    let (condition, mut idx) = parse_atom(tokens, false)?;
+    let (mut condition, mut idx) = parse_atom(tokens, false)?;
     let mut if_arms = [None::<Box<Node>>, None::<Box<Node>>];
 
-    while idx < tokens.len()
-        && (tokens[idx].kind == Kind::QuestionMark || tokens[idx].kind == Kind::Bang)
-    {
+    let arms =
+        |idx: usize| tokens[idx].kind == Kind::QuestionMark || tokens[idx].kind == Kind::Bang;
+
+    // if idx after atom is not '?' || '!', condition is BinExpr
+    if !arms(idx) {
+        // TODO: add for property accessor later
+        (condition, idx) =
+            parse_binary_expr(condition.clone(), &tokens[idx], &tokens[idx + 1..], -1)?;
+        idx += 2; // +1 for condition, +1 for operand provided
+    }
+
+    while idx < tokens.len() && arms(idx) {
         guard_unexpected_input_end(tokens, idx + 1)?;
 
         let (arm, consumed) = parse_atom(&tokens[idx + 1..], false)?;

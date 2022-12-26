@@ -249,25 +249,29 @@ fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> 
     {
         // assert that condition evaluates to boolean value
         let mut condition = condition.as_ref().clone();
-        match condition.eval(stack, allow_thunk.clone())? {
-            Value::Bool(val) => {
-                if val {
-                    match on_true {
-                        Some(on_true) => {
-                            let mut on_true = on_true.as_ref().clone();
-                            return on_true.eval(stack, allow_thunk);
-                        }
-                        None => return Ok(Value::Empty),
-                    }
-                }
-                match on_false {
-                    Some(on_false) => {
-                        let mut on_false = on_false.as_ref().clone();
-                        return on_false.eval(stack, allow_thunk);
+        let val = condition.eval(stack, allow_thunk.clone())?;
+        let mut ret = |val| {
+            if val {
+                match on_true {
+                    Some(on_true) => {
+                        let mut on_true = on_true.as_ref().clone();
+                        return on_true.eval(stack, allow_thunk);
                     }
                     None => return Ok(Value::Empty),
                 }
             }
+            match on_false {
+                Some(on_false) => {
+                    let mut on_false = on_false.as_ref().clone();
+                    return on_false.eval(stack, allow_thunk);
+                }
+                None => return Ok(Value::Empty),
+            }
+        };
+
+        match val {
+            Value::Bool(val) => return ret(val),
+            Value::String(str) => return ret(str.is_empty()),
             _ => {
                 return Err(Err {
                     message: format!(
