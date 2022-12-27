@@ -1,9 +1,9 @@
 use super::{
     error::{Err, ErrorReason},
     lexer::{Kind, Position, Tok},
-    log::{log_debug, log_interactive},
+    log::log_debug,
 };
-use std::fmt::{format, Debug};
+use std::fmt::Debug;
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
 #[derive(Debug, Clone, PartialEq)]
@@ -194,7 +194,10 @@ fn parse_expression(
     col_bound: usize,
 ) -> Result<(Node, usize), Err> {
     let (atom, mut idx) = parse_atom(tokens, parsing_fn_args, col_bound)?;
-    if idx == tokens.len() {
+    if idx == tokens.len()
+        || tokens[idx].position.column <= col_bound
+        || tokens[idx].position.line > atom.position().line
+    {
         return Ok((atom, idx));
     }
 
@@ -410,7 +413,10 @@ fn parse_atom(
         }
     }
 
-    while !parsing_fn_args && idx < tokens.len() {
+    while !parsing_fn_args
+        && idx < tokens.len()
+        && tokens[idx].position.line == atom.position().line
+    {
         match tokens[idx].kind {
             Kind::Identifier
             | Kind::StringLiteral
@@ -419,7 +425,6 @@ fn parse_atom(
             | Kind::FalseLiteral
             | Kind::LeftParen => {
                 let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..], col_bound)?;
-
                 idx += consumed;
                 atom = _atom;
             }
@@ -537,7 +542,10 @@ fn parse_function_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usi
     match tokens[0].kind {
         Kind::Identifier => {
             fn_name = Node::Identifier {
-                value: tokens[0].string(),
+                value: tokens[0]
+                    .str
+                    .clone()
+                    .expect("this value is present in an identifier token"),
                 position: tokens[0].position.clone(),
             };
         }
@@ -586,7 +594,7 @@ fn parse_function_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usi
     let col_bound = fn_name.position().column;
     let mut body = Vec::new();
     while idx < tokens.len() && tokens[idx].position.column > col_bound {
-        let (stmt, consumed) = parse_expression(&tokens[idx..], false, fn_name.position().column)?;
+        let (stmt, consumed) = parse_expression(&tokens[idx..], false, col_bound)?;
         body.push(stmt);
         idx += consumed;
     }

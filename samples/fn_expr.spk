@@ -1,6 +1,0 @@
-// Function literal.
-hi: name string -> string
-    sprint "Hi, " + name
-
-// Function call.
-// hi "there"

@@ -241,8 +241,7 @@ impl Node {
                 eval_speak_function(stack, fn_value, allow_thunk, &arg_results)
             }
             Node::FunctionLiteral { signature, .. } => {
-                // place the function literal on the current stack and return
-                // empty value
+                // place the function literal on the current stack and return no value
                 match signature.0.as_ref() {
                     Node::Identifier { value, .. } => {
                         stack.set(
@@ -252,7 +251,7 @@ impl Node {
                             }),
                         );
 
-                        Ok(Value::Empty)
+                        Ok(Value::_Nil)
                     }
                     _ => Err(Err {
                         message: format!(
@@ -737,74 +736,76 @@ fn eval_speak_function(
 ) -> Result<Value, Err> {
     match fn_value {
         Value::Function(func) => {
-            let mut arg_vtable = HashMap::new();
-            if let Node::FunctionLiteral { signature, .. } = func.defn.as_ref() {
-                for (i, (arg_ident, arg_type)) in signature.1.iter().enumerate() {
-                    if i < args.len() {
-                        // assert the arg value types match
-                        if args[i].value_type().string() != arg_type.string() {
-                            return Err(Err {
-                                message: format!(""),
-                                reason: ErrorReason::Runtime,
-                            });
-                        }
+            match func.defn.as_ref() {
+                Node::FunctionLiteral { signature, .. } => {
+                    let mut arg_vtable = HashMap::new();
+                    for (i, (arg_ident, arg_type)) in signature.1.iter().enumerate() {
+                        if i < args.len() {
+                            // assert the arg value types match
+                            if args[i].value_type().string() != arg_type.string() {
+                                return Err(Err {
+                                    message: format!(""),
+                                    reason: ErrorReason::Runtime,
+                                });
+                            }
 
-                        if let Node::Identifier { value, .. } = arg_ident {
-                            arg_vtable.insert(value.clone(), args[i].clone());
-                        } else {
+                            if let Node::Identifier { value, .. } = arg_ident {
+                                arg_vtable.insert(value.clone(), args[i].clone());
+                            } else {
+                                return Err(Err {
+                                    reason: ErrorReason::Assert,
+                                    message: format!(
+                                        "could not resolve node ({}) as identifier",
+                                        arg_ident.string()
+                                    ),
+                                });
+                            }
+                        }
+                    }
+
+                    let mut return_thunk = Value::FunctionCallThunk {
+                        vt: VTable(arg_vtable),
+                        func: func.clone(),
+                    };
+
+                    if allow_thunk {
+                        return Ok(return_thunk);
+                    }
+
+                    // assert that the return value is what was in the function signature
+                    let res = unwrap_thunk(stack, &mut return_thunk)?;
+
+                    match signature.2.as_ref() {
+                        Node::Identifier { value, .. } => {
+                            if res.value_type().string() != *value {
+                                return Err(Err {
+                                    reason: ErrorReason::Runtime,
+                                    message: format!(
+                                        "the return type expected ({}) but got ({})",
+                                        value,
+                                        res.value_type().string()
+                                    ),
+                                });
+                            }
+                            return Ok(res);
+                        }
+                        _ => {
                             return Err(Err {
                                 reason: ErrorReason::Assert,
                                 message: format!(
-                                    "could not resolve node ({}) as identifier",
-                                    arg_ident.string()
-                                ),
-                            });
-                        }
-                    }
-                }
-
-                let mut return_thunk = Value::FunctionCallThunk {
-                    vt: VTable(arg_vtable),
-                    func: func.clone(),
-                };
-
-                if allow_thunk {
-                    return Ok(return_thunk);
-                }
-
-                // assert that the return value is what was in the function signature
-                let res = unwrap_thunk(stack, &mut return_thunk)?;
-
-                match signature.2.as_ref() {
-                    Node::Identifier { value, .. } => {
-                        if res.value_type().string() != *value {
-                            return Err(Err {
-                                reason: ErrorReason::Runtime,
-                                message: format!(
-                                    "the return type expected ({}) but got ({})",
-                                    value,
-                                    res.value_type().string()
-                                ),
-                            });
-                        }
-                        return Ok(res);
-                    }
-                    _ => {
-                        return Err(Err {
-                            reason: ErrorReason::Assert,
-                            message: format!(
                                 "expected the return type to be an identifier node but got ({})",
                                 signature.2.string(),
                             ),
-                        })
+                            })
+                        }
                     }
                 }
-            }
 
-            Err(Err {
-                message: "".to_string(),
-                reason: ErrorReason::System,
-            })
+                _ => Err(Err {
+                    message: "".to_string(),
+                    reason: ErrorReason::System,
+                }),
+            }
         }
 
         // stack is used in the mod function only to load
@@ -821,12 +822,14 @@ fn eval_speak_function(
     }
 }
 
-// Expands out a recursive strusture of thunks into a flat for loop control structure
+// Expands out a recursive structure of thunks into a flat for loop control structure
 fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err> {
     let mut is_thunk = true;
     'UNWRAP: while is_thunk {
         match thunk {
-            Value::FunctionCallThunk { func, .. } => {
+            Value::FunctionCallThunk { func, vt, .. } => {
+                stack.push_frame(vt.clone()); // TODO: pop frames after use
+
                 let defn = func.defn.as_mut();
                 match defn {
                     Node::FunctionLiteral {
@@ -875,6 +878,7 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
 
 fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
     let mut op = op;
+    let _str = op.string();
     match op {
         Node::StringLiteral { value, .. } => Ok(Value::String(value)),
         Node::NumberLiteral { value, .. } => Ok(Value::Number(value)),
@@ -883,8 +887,12 @@ fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
             if let Some(val) = stack.get(&value) {
                 return Ok(val.clone());
             }
+
             return Err(Err {
-                message: format!("value for identifier, {},  not found in stack", value),
+                message: format!(
+                    "value for identifier, {},  not found in stack for node {}",
+                    value, _str
+                ),
                 reason: ErrorReason::Runtime,
             });
         }

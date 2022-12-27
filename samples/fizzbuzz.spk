@@ -6,4 +6,4 @@ fizzbuzz: n number -> string
     sprint n
 
 // call with 100
-printf "fizzbuzz result for {} is {}\n" 100 (fizzbuzz 100)
+printf "fizzbuzz result for {} is {}" 100 (fizzbuzz 100)
