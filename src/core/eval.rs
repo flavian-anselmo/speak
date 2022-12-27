@@ -24,6 +24,8 @@ pub mod r#type {
 
         // Empty type.
         Empty,
+
+        Nil,
     }
 
     // type aliases
@@ -34,7 +36,8 @@ pub mod r#type {
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
                 Type::Function => "function".to_string(),
-                Type::Empty => "empty".to_string(),
+                Type::Empty => "()".to_string(),
+                Type::Nil => "".to_string(),
             }
         }
     }
@@ -73,6 +76,10 @@ pub mod value {
         },
 
         Empty,
+
+        /// This is a convenience type that is not used by the programmer but
+        /// helpful in returns from expressions that do not evaluate to values.
+        _Nil,
     }
 
     #[derive(Debug, Clone)]
@@ -102,6 +109,7 @@ pub mod value {
                 | Value::FunctionCallThunk { .. }
                 | Value::NativeFunction(..) => Type::Function,
                 Value::Empty => Type::Empty,
+                Value::_Nil => Type::Nil,
             }
         }
 
@@ -126,6 +134,7 @@ pub mod value {
                     format!("Thunk of ({})", func.string())
                 }
                 Value::Empty => "()".to_string(),
+                Value::_Nil => "".to_string(),
             }
         }
     }
@@ -135,8 +144,8 @@ impl Node {
     pub fn eval(&mut self, stack: &mut StackFrame, allow_thunk: bool) -> Result<Value, Err> {
         match self {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
-            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())), // Tidy: this is a copy
-            Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())), // Tidy: this is a copy
+            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())),
             Node::EmptyIdentifier { .. } => Ok(Value::Empty),
             Node::Identifier { value, position } => {
                 if let Some(val) = stack.get(&value) {
@@ -231,9 +240,29 @@ impl Node {
                 let fn_value = &function.eval(stack, false)?;
                 eval_speak_function(stack, fn_value, allow_thunk, &arg_results)
             }
-            Node::FunctionLiteral { .. } => Ok(Value::Function(Function {
-                defn: Box::new(self.clone()),
-            })),
+            Node::FunctionLiteral { signature, .. } => {
+                // place the function literal on the current stack and return no value
+                match signature.0.as_ref() {
+                    Node::Identifier { value, .. } => {
+                        stack.set(
+                            value.clone(),
+                            Value::Function(Function {
+                                defn: Box::new(self.clone()),
+                            }),
+                        );
+
+                        Ok(Value::_Nil)
+                    }
+                    _ => Err(Err {
+                        message: format!(
+                            "expected identifier node but got {} at [{}]",
+                            signature.0.string(),
+                            signature.0.position().string()
+                        ),
+                        reason: ErrorReason::Assert,
+                    }),
+                }
+            }
             Node::IfExpr { .. } => eval_if_expr_node(&self, stack, allow_thunk),
         }
     }
@@ -249,25 +278,29 @@ fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> 
     {
         // assert that condition evaluates to boolean value
         let mut condition = condition.as_ref().clone();
-        match condition.eval(stack, allow_thunk.clone())? {
-            Value::Bool(val) => {
-                if val {
-                    match on_true {
-                        Some(on_true) => {
-                            let mut on_true = on_true.as_ref().clone();
-                            return on_true.eval(stack, allow_thunk);
-                        }
-                        None => return Ok(Value::Empty),
-                    }
-                }
-                match on_false {
-                    Some(on_false) => {
-                        let mut on_false = on_false.as_ref().clone();
-                        return on_false.eval(stack, allow_thunk);
+        let val = condition.eval(stack, allow_thunk.clone())?;
+        let mut ret = |val| {
+            if val {
+                match on_true {
+                    Some(on_true) => {
+                        let mut on_true = on_true.as_ref().clone();
+                        return on_true.eval(stack, allow_thunk);
                     }
                     None => return Ok(Value::Empty),
                 }
             }
+            match on_false {
+                Some(on_false) => {
+                    let mut on_false = on_false.as_ref().clone();
+                    return on_false.eval(stack, allow_thunk);
+                }
+                None => return Ok(Value::Empty),
+            }
+        };
+
+        match val {
+            Value::Bool(val) => return ret(val),
+            Value::String(str) => return ret(str.is_empty()),
             _ => {
                 return Err(Err {
                     message: format!(
@@ -492,7 +525,7 @@ fn eval_binary_expr_node(
                                     reason: ErrorReason::Runtime,
                                 });
                             }
-                            return Ok(Value::Number(left_num + right_num));
+                            return Ok(Value::Number(left_num % right_num));
                         }
                     }
 
@@ -703,37 +736,76 @@ fn eval_speak_function(
 ) -> Result<Value, Err> {
     match fn_value {
         Value::Function(func) => {
-            let mut arg_vtable = HashMap::new();
-            if let Node::FunctionLiteral { arguments, .. } = func.defn.as_ref() {
-                for (i, (arg_ident, arg_type)) in arguments.iter().enumerate() {
-                    if i < args.len() {
-                        // assert the arg value types match
-                        if args[i].value_type() != *arg_type {
-                            return Err(Err {
-                                message: format!(""),
-                                reason: ErrorReason::Runtime,
-                            });
-                        }
+            match func.defn.as_ref() {
+                Node::FunctionLiteral { signature, .. } => {
+                    let mut arg_vtable = HashMap::new();
+                    for (i, (arg_ident, arg_type)) in signature.1.iter().enumerate() {
+                        if i < args.len() {
+                            // assert the arg value types match
+                            if args[i].value_type().string() != arg_type.string() {
+                                return Err(Err {
+                                    message: format!(""),
+                                    reason: ErrorReason::Runtime,
+                                });
+                            }
 
-                        arg_vtable.insert(arg_ident.clone(), args[i].clone());
+                            if let Node::Identifier { value, .. } = arg_ident {
+                                arg_vtable.insert(value.clone(), args[i].clone());
+                            } else {
+                                return Err(Err {
+                                    reason: ErrorReason::Assert,
+                                    message: format!(
+                                        "could not resolve node ({}) as identifier",
+                                        arg_ident.string()
+                                    ),
+                                });
+                            }
+                        }
+                    }
+
+                    let mut return_thunk = Value::FunctionCallThunk {
+                        vt: VTable(arg_vtable),
+                        func: func.clone(),
+                    };
+
+                    if allow_thunk {
+                        return Ok(return_thunk);
+                    }
+
+                    // assert that the return value is what was in the function signature
+                    let res = unwrap_thunk(stack, &mut return_thunk)?;
+
+                    match signature.2.as_ref() {
+                        Node::Identifier { value, .. } => {
+                            if res.value_type().string() != *value {
+                                return Err(Err {
+                                    reason: ErrorReason::Runtime,
+                                    message: format!(
+                                        "the return type expected ({}) but got ({})",
+                                        value,
+                                        res.value_type().string()
+                                    ),
+                                });
+                            }
+                            return Ok(res);
+                        }
+                        _ => {
+                            return Err(Err {
+                                reason: ErrorReason::Assert,
+                                message: format!(
+                                "expected the return type to be an identifier node but got ({})",
+                                signature.2.string(),
+                            ),
+                            })
+                        }
                     }
                 }
 
-                let mut return_thunk = Value::FunctionCallThunk {
-                    vt: VTable(arg_vtable),
-                    func: func.clone(),
-                };
-
-                if allow_thunk {
-                    return Ok(return_thunk);
-                }
-                return unwrap_thunk(stack, &mut return_thunk);
+                _ => Err(Err {
+                    message: "".to_string(),
+                    reason: ErrorReason::System,
+                }),
             }
-
-            Err(Err {
-                message: "".to_string(),
-                reason: ErrorReason::System,
-            })
         }
 
         // stack is used in the mod function only to load
@@ -750,28 +822,63 @@ fn eval_speak_function(
     }
 }
 
+// Expands out a recursive structure of thunks into a flat for loop control structure
 fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err> {
     let mut is_thunk = true;
-    let mut v = Value::Empty;
-    while is_thunk {
-        if let Value::FunctionCallThunk { func, .. } = thunk {
-            // get the function body and eval
-            if let Node::FunctionLiteral { body, .. } = func.defn.as_mut() {
-                v = body.eval(stack, true)?;
-                if let Value::FunctionCallThunk { .. } = v {
-                    is_thunk = true
-                } else {
-                    is_thunk = false
+    'UNWRAP: while is_thunk {
+        match thunk {
+            Value::FunctionCallThunk { func, vt, .. } => {
+                stack.push_frame(vt.clone()); // TODO: pop frames after use
+
+                let defn = func.defn.as_mut();
+                match defn {
+                    Node::FunctionLiteral {
+                        signature, body, ..
+                    } => {
+                        let mut val: Value;
+                        for stmt in body {
+                            val = stmt.eval(stack, true)?;
+                            match val {
+                                Value::FunctionCallThunk { .. } => {
+                                    is_thunk = true;
+                                    continue 'UNWRAP;
+                                }
+
+                                _ => {
+                                    // if the return type is that of the signature, return
+                                    if val.value_type().string() == signature.2.string() {
+                                        return Ok(val);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(Err {
+                            message: format!(
+                                "expected function literal node value but got {}",
+                                defn.string()
+                            ),
+                            reason: ErrorReason::Assert,
+                        });
+                    }
                 }
+            }
+            _ => {
+                return Err(Err {
+                    message: format!("expected thunk value but got {}", thunk.string()),
+                    reason: ErrorReason::Assert,
+                });
             }
         }
     }
 
-    Ok(v)
+    unimplemented!("this code is never called")
 }
 
 fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
     let mut op = op;
+    let _str = op.string();
     match op {
         Node::StringLiteral { value, .. } => Ok(Value::String(value)),
         Node::NumberLiteral { value, .. } => Ok(Value::Number(value)),
@@ -780,8 +887,12 @@ fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
             if let Some(val) = stack.get(&value) {
                 return Ok(val.clone());
             }
+
             return Err(Err {
-                message: format!("value for identifier, {},  not found in stack", value),
+                message: format!(
+                    "value for identifier, {},  not found in stack for node {}",
+                    value, _str
+                ),
                 reason: ErrorReason::Runtime,
             });
         }

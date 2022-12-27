@@ -27,7 +27,7 @@ impl VTable {
 
 /// StackFrame represents the heap of variables local to a particular function call frame,
 /// and recursively references other parent StackFrames internally.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StackFrame {
     Frame {
         frame: VTable,
@@ -42,6 +42,30 @@ impl StackFrame {
         Self::Frame {
             frame: value_table,
             parent_frame: Box::new(parent),
+        }
+    }
+
+    /// Pushes a frame to the stack and sets it's current frame as the parent frame and
+    /// the new frane as the new current frame.
+    pub fn push_frame(&mut self, frame: VTable) {
+        *self = Self::Frame {
+            frame,
+            parent_frame: Box::new(self.clone()),
+        };
+    }
+
+    /// Pops a child frame from the stack and sets it's parent frame as the current
+    /// frame on the stack.
+    pub fn pop_frame(&mut self) -> Result<(), Err> {
+        match self {
+            StackFrame::Frame { parent_frame, .. } => {
+                *self = parent_frame.as_ref().clone();
+                Ok(())
+            }
+            StackFrame::Nil => Err(Err {
+                message: "there is no frame in stack to pop".to_string(),
+                reason: ErrorReason::Assert,
+            }),
         }
     }
 
@@ -278,6 +302,34 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                             },
                         ),
                     ))
+                })),
+            );
+
+            frame.set(
+                "printf".to_string(),
+                Value::NativeFunction(NativeFunction("printf".to_string(), |_, inputs| {
+                    if inputs.len() <= 1 {
+                        return Err(Err {
+                            reason: ErrorReason::Runtime,
+                            message: "sprintf takes at least two arguments".to_string(),
+                        });
+                    }
+
+                    print!(
+                        "{}",
+                        inputs[0].string().split("{}").enumerate().fold(
+                            String::new(),
+                            |acc, (i, x)| {
+                                if i == inputs.len() - 1 {
+                                    acc + x
+                                } else {
+                                    acc + x + &inputs[i + 1].string()
+                                }
+                            },
+                        )
+                    );
+
+                    Ok(Value::_Nil)
                 })),
             );
 
