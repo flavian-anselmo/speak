@@ -14,5 +14,5 @@ fibMemo: n number -> number
 
 
 log "(fib 20) is 6765:"
-println "Naive solution: {}" fib 20
-println "Dynamic solution: {}" fibMemo 20
+println "Naive solution: {}" (fib 20)
+println "Dynamic solution: {}" (fibMemo 20)

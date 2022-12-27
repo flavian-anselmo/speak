@@ -1,8 +1,7 @@
 use super::{
     error::{Err, ErrorReason},
-    eval::r#type,
     lexer::{Kind, Position, Tok},
-    log::{log_debug, log_interactive},
+    log::log_debug,
 };
 use std::fmt::Debug;
 
@@ -44,8 +43,9 @@ pub enum Node {
         arguments: Vec<Node>,
         position: Position,
     },
+
     FunctionLiteral {
-        arguments: Vec<(String, r#type::Type)>, // (identifier, type)
+        signature: (Box<Node>, Vec<(Node, Node)>, Box<Node>), // name, args, return type
         body: Box<Node>,
         position: Position,
     },
@@ -92,10 +92,11 @@ impl Node {
                 format!("Call ({}) on ({})", function.string(), args)
             }
             Node::FunctionLiteral {
-                arguments,
-                body: _,
+                signature,
                 position,
-            } => arguments
+                ..
+            } => signature
+                .1
                 .iter()
                 .fold(format!("Function ({}):", position.string()), |acc, arg| {
                     format!("{}, {}", acc, arg.1.string())
@@ -390,7 +391,6 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
             }
         }
 
-        //  Kind::QuestionMark | Kind::Bang => return Ok((atom, idx - 1)), // consumed by caller
         _ => {
             return Err(Err {
                 message: format!("unexpected start of atom, found {}", tok.kind.string(),),
@@ -440,27 +440,19 @@ fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Er
 }
 
 fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
-    let (mut condition, mut idx) = parse_atom(tokens, false)?;
+    let (condition, mut idx) = parse_expression(tokens, false)?;
     let mut if_arms = [None::<Box<Node>>, None::<Box<Node>>];
 
     let arms =
         |idx: usize| tokens[idx].kind == Kind::QuestionMark || tokens[idx].kind == Kind::Bang;
 
-    // if idx after atom is not '?' || '!', condition is BinExpr
-    if !arms(idx) {
-        // TODO: add for property accessor later
-        (condition, idx) =
-            parse_binary_expr(condition.clone(), &tokens[idx], &tokens[idx + 1..], -1)?;
-        idx += 2; // +1 for condition, +1 for operand provided
-    }
-
     while idx < tokens.len() && arms(idx) {
         guard_unexpected_input_end(tokens, idx + 1)?;
 
-        let (arm, consumed) = parse_atom(&tokens[idx + 1..], false)?;
+        let (arm, consumed) = parse_expression(&tokens[idx + 1..], false)?;
         let kind = tokens[idx].kind.clone();
 
-        idx += consumed + 1; // +1 for QuestionMark || Bang
+        idx += consumed + 1; // +1 for Node::QuestionMark || Node::Bang
 
         if kind == Kind::QuestionMark {
             if_arms[0] = Some(Box::new(arm));
@@ -477,7 +469,7 @@ fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
             on_false: if_arms[1].clone(),
             position: pos.clone(),
         },
-        idx + 1, // +1 for If consumed by caller
+        idx + 1, // +1 for Node::If consumed by caller
     ))
 }
 
@@ -510,52 +502,124 @@ fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err
 }
 
 fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
-    let (tok, mut idx) = (&tokens[0], 1);
-    let mut arguments = Vec::new();
-    guard_unexpected_input_end(tokens, idx)?;
+    // caller is parse_atom(); empty_ident/identifier token and colon token was checked
 
-    match tok.kind {
-        Kind::LeftParen => {
-            //loop{}
-        }
+    let fn_name: Node;
+    match tokens[0].kind {
         Kind::Identifier => {
-            //
-            arguments.push(Node::Identifier {
-                value: tok.str.clone().expect("this node has this value present"),
-                position: tok.position.clone(),
-            });
+            fn_name = Node::Identifier {
+                value: tokens[0].string(),
+                position: tokens[0].position.clone(),
+            };
         }
         Kind::EmptyIdentifier => {
-            arguments.push(Node::EmptyIdentifier {
-                position: tok.position.clone(),
-            });
+            fn_name = Node::EmptyIdentifier {
+                position: tokens[0].position.clone(),
+            }
         }
-
         _ => {
             return Err(Err {
-                message: format!(
-                    "unexpected token {} at {}, malformed arguements list",
-                    tok.kind.string(),
-                    tok.position.string()
-                ),
-                reason: ErrorReason::Syntax,
+                message: "".to_string(),
+                reason: ErrorReason::Assert,
             })
         }
     }
 
+    let mut idx = 2;
     guard_unexpected_input_end(tokens, idx)?;
 
+    // hi: name string -> string
+    //   sprint "Hi, " + name
+
+    // parse, arguements
+    let (args, consumed) = parse_fn_sign_args(&tokens[idx..])?;
+
+    idx += consumed;
+
+    guard_unexpected_input_end(tokens, idx)?;
+    let ret_type: Node;
+    if let Kind::TypeName(x) = &tokens[idx].kind {
+        ret_type = Node::Identifier {
+            value: x.string(),
+            position: tokens[idx].position.clone(),
+        };
+        idx += 1;
+    } else {
+        return Err(Err {
+            message: format!(
+                "expected a type, found ({}) at [{}]",
+                tokens[idx].kind.string(),
+                tokens[idx].position.string()
+            ),
+            reason: ErrorReason::Syntax,
+        });
+    }
+
+    guard_unexpected_input_end(tokens, idx)?;
     let (body, consumed) = parse_expression(&tokens[idx..], false)?;
     idx += consumed;
 
-    Ok((
+    let pos = fn_name.position().clone();
+    return Ok((
         Node::FunctionLiteral {
-            arguments: Vec::new(),
+            signature: (Box::new(fn_name), args, Box::new(ret_type)),
             body: Box::new(body),
-            position: tok.position.clone(),
+            position: pos,
         },
         idx,
-    ))
+    ));
+}
+
+/// takes a token stream of the function signature, parses it and returns the function arguments signature.
+fn parse_fn_sign_args(tokens: &[Tok]) -> Result<(Vec<(Node, Node)>, usize), Err> {
+    //  fname, lastname string -> string
+    // i number, s int -> string
+    let (mut args, mut arg_types, mut idx) = (Vec::new(), Vec::new(), 0);
+
+    while idx < tokens.len() && tokens[idx].kind != Kind::FunctionArrow {
+        // ident type , || ident,
+        match &tokens[idx].kind {
+            Kind::Identifier => {
+                args.push(Node::Identifier {
+                    value: tokens[idx].str.clone().unwrap(),
+                    position: tokens[idx].position.clone(),
+                });
+            }
+            Kind::TypeName(x) => {
+                if arg_types.len() > args.len() {
+                    return Err(Err {
+                        message: format!(
+                            "the signature parsed more types than args at [{}]",
+                            tokens[idx].position.string()
+                        ),
+                        reason: ErrorReason::Syntax,
+                    });
+                }
+                for _ in 1..=(args.len() - arg_types.len()) {
+                    arg_types.push(Node::Identifier {
+                        value: x.string(),
+                        position: tokens[idx].position.clone(),
+                    })
+                }
+            }
+
+            Kind::Separator => {} // consumed by parser
+
+            _ => {
+                return Err(Err {
+                    message: format!(
+                        "expected identifier, found ({}) at [{}]",
+                        tokens[idx].string(),
+                        tokens[idx].position.string()
+                    ),
+                    reason: ErrorReason::Syntax,
+                });
+            }
+        }
+        idx += 1;
+    }
+
+    Ok((args.into_iter().zip(arg_types.into_iter()).collect(), idx))
 }
 
 fn guard_unexpected_input_end(tokens: &[Tok], idx: usize) -> Result<(), Err> {

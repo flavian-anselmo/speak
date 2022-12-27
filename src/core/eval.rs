@@ -34,7 +34,7 @@ pub mod r#type {
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
                 Type::Function => "function".to_string(),
-                Type::Empty => "empty".to_string(),
+                Type::Empty => "()".to_string(),
             }
         }
     }
@@ -135,8 +135,8 @@ impl Node {
     pub fn eval(&mut self, stack: &mut StackFrame, allow_thunk: bool) -> Result<Value, Err> {
         match self {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
-            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())), // Tidy: this is a copy
-            Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())), // Tidy: this is a copy
+            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())),
             Node::EmptyIdentifier { .. } => Ok(Value::Empty),
             Node::Identifier { value, position } => {
                 if let Some(val) = stack.get(&value) {
@@ -496,7 +496,7 @@ fn eval_binary_expr_node(
                                     reason: ErrorReason::Runtime,
                                 });
                             }
-                            return Ok(Value::Number(left_num + right_num));
+                            return Ok(Value::Number(left_num % right_num));
                         }
                     }
 
@@ -708,18 +708,28 @@ fn eval_speak_function(
     match fn_value {
         Value::Function(func) => {
             let mut arg_vtable = HashMap::new();
-            if let Node::FunctionLiteral { arguments, .. } = func.defn.as_ref() {
-                for (i, (arg_ident, arg_type)) in arguments.iter().enumerate() {
+            if let Node::FunctionLiteral { signature, .. } = func.defn.as_ref() {
+                for (i, (arg_ident, arg_type)) in signature.1.iter().enumerate() {
                     if i < args.len() {
                         // assert the arg value types match
-                        if args[i].value_type() != *arg_type {
+                        if args[i].value_type().string() != arg_type.string() {
                             return Err(Err {
                                 message: format!(""),
                                 reason: ErrorReason::Runtime,
                             });
                         }
 
-                        arg_vtable.insert(arg_ident.clone(), args[i].clone());
+                        if let Node::Identifier { value, .. } = arg_ident {
+                            arg_vtable.insert(value.clone(), args[i].clone());
+                        } else {
+                            return Err(Err {
+                                reason: ErrorReason::Assert,
+                                message: format!(
+                                    "could not resolve node ({}) as identifier",
+                                    arg_ident.string()
+                                ),
+                            });
+                        }
                     }
                 }
 
