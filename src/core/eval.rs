@@ -949,7 +949,7 @@ mod test {
                 .eval(&mut ctx_test.frame, false)
                 .expect("this should resolve to empty value");
 
-            assert_eq!(val.string(), "()");
+            assert_eq!(val.string(), "");
         }
 
         // write "Hello World!" to output
