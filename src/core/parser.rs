@@ -1,9 +1,9 @@
 use super::{
     error::{Err, ErrorReason},
     lexer::{Kind, Position, Tok},
-    log::log_debug,
+    log::{log_debug, log_interactive},
 };
-use std::fmt::Debug;
+use std::fmt::{format, Debug};
 
 /// Node represents an abstract syntax tree (AST) node in a Speak program.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,10 +43,9 @@ pub enum Node {
         arguments: Vec<Node>,
         position: Position,
     },
-
     FunctionLiteral {
-        signature: (Box<Node>, Vec<(Node, Node)>, Box<Node>), // name, args, return type
-        body: Box<Node>,
+        signature: (Box<Node>, Vec<(Node, Node)>, Box<Node>),
+        body: Vec<Node>,
         position: Position,
     },
     IfExpr {
@@ -91,16 +90,18 @@ impl Node {
                 }
                 format!("Call ({}) on ({})", function.string(), args)
             }
-            Node::FunctionLiteral {
-                signature,
-                position,
-                ..
-            } => signature
-                .1
-                .iter()
-                .fold(format!("Function ({}):", position.string()), |acc, arg| {
-                    format!("{}, {}", acc, arg.1.string())
+            Node::FunctionLiteral { signature, .. } => format!(
+                "Function ({}): {} -> {}",
+                signature.0.position().string(),
+                signature.1.iter().fold(String::new(), |acc, (_, l)| {
+                    if acc.is_empty() {
+                        l.string()
+                    } else {
+                        format!("{}, {}", acc, l.string())
+                    }
                 }),
+                signature.2.string()
+            ),
             Node::IfExpr {
                 condition,
                 on_true,
@@ -141,7 +142,7 @@ pub fn parse(tokens: &[Tok], nodes_chan: &mut Vec<Node>, debug_parser: bool) -> 
     let (mut idx, length) = (0, tokens.len());
 
     while idx < length {
-        let (node, consumed) = parse_expression(&tokens[idx..], false)?;
+        let (node, consumed) = parse_expression(&tokens[idx..], false, 1)?;
         if debug_parser {
             log_debug(&format!("parse -> {}", node.string()));
         }
@@ -187,13 +188,16 @@ fn is_binary_op(t: &Tok) -> bool {
     }
 }
 
-fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
-    let (atom, consumed) = parse_atom(tokens, parsing_fn_args)?;
-    if consumed == tokens.len() {
-        return Ok((atom, consumed));
+fn parse_expression(
+    tokens: &[Tok],
+    parsing_fn_args: bool,
+    col_bound: usize,
+) -> Result<(Node, usize), Err> {
+    let (atom, mut idx) = parse_atom(tokens, parsing_fn_args, col_bound)?;
+    if idx == tokens.len() {
+        return Ok((atom, idx));
     }
 
-    let mut idx = consumed;
     guard_unexpected_input_end(tokens, idx)?;
     let next_tok = &tokens[idx];
     idx += 1;
@@ -215,7 +219,8 @@ fn parse_expression(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usiz
         | Kind::EqualOp
         | Kind::AssignOp
         | Kind::AccessorOp => {
-            let (bin_expr, consumed) = parse_binary_expr(atom, next_tok, &tokens[idx..], -1)?;
+            let (bin_expr, consumed) =
+                parse_binary_expr(atom, next_tok, &tokens[idx..], -1, col_bound)?;
             idx += consumed;
             Ok((bin_expr, idx))
         }
@@ -242,8 +247,9 @@ fn parse_binary_expr(
     operator: &Tok,
     tokens: &[Tok],
     previous_priority: i8,
+    col_bound: usize,
 ) -> Result<(Node, usize), Err> {
-    let (right_operand, mut idx) = parse_atom(tokens, false)?;
+    let (right_operand, mut idx) = parse_atom(tokens, false, col_bound)?;
 
     let mut ops = vec![operator.clone()];
     let mut nodes = vec![left_operand, right_operand];
@@ -262,7 +268,7 @@ fn parse_binary_expr(
 
             guard_unexpected_input_end(&tokens, idx)?;
 
-            let (right_atom, consumed) = parse_atom(&tokens[idx..], false)?;
+            let (right_atom, consumed) = parse_atom(&tokens[idx..], false, col_bound)?;
             nodes.push(right_atom);
             idx += consumed;
         } else {
@@ -276,6 +282,7 @@ fn parse_binary_expr(
                 &tokens[idx],
                 &tokens[idx + 1..],
                 get_op_priority(&ops[ops.len() - 1]),
+                col_bound,
             )?;
 
             nodes[pos] = subtree;
@@ -302,18 +309,22 @@ fn parse_binary_expr(
     Ok((tree, idx))
 }
 
-fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Err> {
+fn parse_atom(
+    tokens: &[Tok],
+    parsing_fn_args: bool,
+    col_bound: usize,
+) -> Result<(Node, usize), Err> {
     guard_unexpected_input_end(tokens, 0)?;
     let (tok, mut idx) = (&tokens[0], 1);
 
     let mut atom: Node;
     match tok.kind {
-        Kind::If => return parse_if_expr(&tokens[idx..]),
+        Kind::If => return parse_if_expr(&tokens[idx..], col_bound),
 
-        Kind::LeftParen => return parse_capsulated_expr(tokens, idx),
+        Kind::LeftParen => return parse_capsulated_expr(tokens, idx, col_bound),
 
         Kind::NegationOp => {
-            let (operand, consumed) = parse_atom(&tokens[idx..], false)?;
+            let (operand, consumed) = parse_atom(&tokens[idx..], false, col_bound)?;
 
             return Ok((
                 Node::UnaryExpression {
@@ -368,7 +379,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
         Kind::Identifier => {
             if idx < tokens.len() && tokens[idx].kind == Kind::Colon {
                 // colon after identifier means the identifier is a function literal
-                (atom, idx) = parse_function_literal(&tokens)?;
+                (atom, idx) = parse_function_literal(&tokens, col_bound)?;
             } else {
                 atom = Node::Identifier {
                     value: tok.str.clone().expect("this node has this value present"),
@@ -380,7 +391,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
         Kind::EmptyIdentifier => {
             if tokens[idx].kind == Kind::Colon {
                 // colon after identifier means the identifier is a function literal
-                (atom, idx) = parse_function_literal(&tokens)?;
+                (atom, idx) = parse_function_literal(&tokens, col_bound)?;
             } else {
                 return Ok((
                     Node::EmptyIdentifier {
@@ -407,7 +418,7 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
             | Kind::TrueLiteral
             | Kind::FalseLiteral
             | Kind::LeftParen => {
-                let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..])?;
+                let (_atom, consumed) = parse_function_call(&atom, &tokens[idx..], col_bound)?;
 
                 idx += consumed;
                 atom = _atom;
@@ -421,9 +432,13 @@ fn parse_atom(tokens: &[Tok], parsing_fn_args: bool) -> Result<(Node, usize), Er
     Ok((atom, idx))
 }
 
-fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Err> {
+fn parse_capsulated_expr(
+    tokens: &[Tok],
+    idx: usize,
+    col_bound: usize,
+) -> Result<(Node, usize), Err> {
     // grouped expression that evals to a single expression or a function literal node
-    let (atom, consumed) = parse_expression(&tokens[idx..], false)?;
+    let (atom, consumed) = parse_expression(&tokens[idx..], false, col_bound)?;
     let idx = idx + consumed;
 
     guard_unexpected_input_end(tokens, idx)?;
@@ -439,8 +454,8 @@ fn parse_capsulated_expr(tokens: &[Tok], idx: usize) -> Result<(Node, usize), Er
     return Ok((atom, idx + 1)); // +1 for the RightParen
 }
 
-fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
-    let (condition, mut idx) = parse_expression(tokens, false)?;
+fn parse_if_expr(tokens: &[Tok], col_bound: usize) -> Result<(Node, usize), Err> {
+    let (condition, mut idx) = parse_expression(tokens, false, col_bound)?;
     let mut if_arms = [None::<Box<Node>>, None::<Box<Node>>];
 
     let arms =
@@ -449,7 +464,7 @@ fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
     while idx < tokens.len() && arms(idx) {
         guard_unexpected_input_end(tokens, idx + 1)?;
 
-        let (arm, consumed) = parse_expression(&tokens[idx + 1..], false)?;
+        let (arm, consumed) = parse_expression(&tokens[idx + 1..], false, col_bound)?;
         let kind = tokens[idx].kind.clone();
 
         idx += consumed + 1; // +1 for Node::QuestionMark || Node::Bang
@@ -473,7 +488,11 @@ fn parse_if_expr(tokens: &[Tok]) -> Result<(Node, usize), Err> {
     ))
 }
 
-fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err> {
+fn parse_function_call(
+    func: &Node,
+    tokens: &[Tok],
+    col_bound: usize,
+) -> Result<(Node, usize), Err> {
     let mut idx = 0;
     guard_unexpected_input_end(tokens, idx)?;
 
@@ -485,7 +504,7 @@ fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err
         && tokens[idx].kind != Kind::Bang
         && tokens[idx].kind != Kind::QuestionMark
     {
-        let (expr, consumed) = parse_expression(&tokens[idx..], true)?;
+        let (expr, consumed) = parse_expression(&tokens[idx..], true, col_bound)?;
 
         idx += consumed;
         args.push(expr);
@@ -501,9 +520,19 @@ fn parse_function_call(func: &Node, tokens: &[Tok]) -> Result<(Node, usize), Err
     ))
 }
 
-fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
-    // caller is parse_atom(); empty_ident/identifier token and colon token was checked
+/// This function takes a stream of tokens
+fn parse_function_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usize), Err> {
+    if col_bound > 1 && tokens[0].position.column <= col_bound {
+        return Err(Err {
+            message: format!(
+                "the function literal is declared at [{}] and should be nested as a closure",
+                tokens[0].position.string()
+            ),
+            reason: ErrorReason::Syntax,
+        });
+    }
 
+    // parse the function's name/identifier
     let fn_name: Node;
     match tokens[0].kind {
         Kind::Identifier => {
@@ -528,14 +557,11 @@ fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
     let mut idx = 2;
     guard_unexpected_input_end(tokens, idx)?;
 
-    // hi: name string -> string
-    //   sprint "Hi, " + name
-
-    // parse, arguements
+    // parse function's arguements
     let (args, consumed) = parse_fn_sign_args(&tokens[idx..])?;
+    idx += consumed + 1; // +1 for the Kind::FunctionArrow
 
-    idx += consumed;
-
+    // parse function's return type
     guard_unexpected_input_end(tokens, idx)?;
     let ret_type: Node;
     if let Kind::TypeName(x) = &tokens[idx].kind {
@@ -555,16 +581,23 @@ fn parse_function_literal(tokens: &[Tok]) -> Result<(Node, usize), Err> {
         });
     }
 
+    // parse the function's body
     guard_unexpected_input_end(tokens, idx)?;
-    let (body, consumed) = parse_expression(&tokens[idx..], false)?;
-    idx += consumed;
+    let col_bound = fn_name.position().column;
+    let mut body = Vec::new();
+    while idx < tokens.len() && tokens[idx].position.column > col_bound {
+        let (stmt, consumed) = parse_expression(&tokens[idx..], false, fn_name.position().column)?;
+        body.push(stmt);
+        idx += consumed;
+    }
 
-    let pos = fn_name.position().clone();
+    // compose the parsed components into a function literal
+    let position = fn_name.position().clone();
     return Ok((
         Node::FunctionLiteral {
             signature: (Box::new(fn_name), args, Box::new(ret_type)),
-            body: Box::new(body),
-            position: pos,
+            body,
+            position,
         },
         idx,
     ));
@@ -672,7 +705,7 @@ mod test {
         ];
 
         let (res, consumed) =
-            parse_expression(&tokens, false).expect("this will return the FunctionCall node");
+            parse_expression(&tokens, false, 0).expect("this will return the FunctionCall node");
         assert_eq!(2, consumed, "the number of nodes consumed");
 
         assert_eq!(
@@ -741,7 +774,7 @@ mod test {
         ];
 
         let (res, consumed) =
-            parse_expression(&tokens, false).expect("this will return the FunctionCall node");
+            parse_expression(&tokens, false, 0).expect("this will return the FunctionCall node");
         assert_eq!(5, consumed, "the number of nodes consumed");
 
         let expect = Node::BinaryExpression {
