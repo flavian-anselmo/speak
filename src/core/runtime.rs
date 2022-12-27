@@ -157,7 +157,7 @@ pub struct Context {
     /// cwd is an always-absolute path to current working dir (of module system)
     _cwd: Option<String>,
     /// The currently executing file's path, if any
-    _file: Option<String>,
+    pub file: Option<String>,
     /// Frame represents the Context's global heap
     pub frame: StackFrame,
 
@@ -170,7 +170,7 @@ impl Context {
     pub fn new(verbose: &bool) -> Self {
         Context {
             _cwd: Some(env::current_dir().unwrap().to_str().unwrap().to_string()),
-            _file: None,
+            file: None,
             frame: StackFrame::new(VTable(HashMap::new()), StackFrame::Nil),
             debug_lex: *verbose,
             debug_parse: *verbose,
@@ -230,8 +230,11 @@ impl Context {
 
     /// Allows to Exec() a program file in a given context.
     pub fn exec_path(&mut self, path: String) -> Result<Value, Err> {
-        match fs::read(path) {
-            Ok(data) => self.exec(BufReader::new(&data[..])),
+        match fs::read(path.clone()) {
+            Ok(data) => {
+                self.file = Some(path);
+                self.exec(BufReader::new(&data[..]))
+            }
             Err(err) => Err(Err {
                 message: format!("Speak encountered a system error: {}", err),
                 reason: ErrorReason::System,
@@ -269,7 +272,7 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                             .fold(String::new(), |acc, x| acc + &x.string())
                     );
 
-                    Ok(Value::Empty)
+                    Ok(Value::_Nil)
                 })),
             );
 
@@ -369,20 +372,18 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                             }
                         }
 
-                        Ok(Value::Empty)
+                        Ok(Value::_Nil)
                     },
                 )),
             );
 
-            return Ok(());
+            Ok(())
         }
 
-        StackFrame::Nil => {
-            return Err(Err {
-                message: "Stackframe provided is Nil".to_string(),
-                reason: ErrorReason::Assert,
-            })
-        }
+        StackFrame::Nil => Err(Err {
+            message: "Stackframe provided is Nil".to_string(),
+            reason: ErrorReason::Assert,
+        }),
     }
 }
 

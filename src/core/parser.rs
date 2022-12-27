@@ -153,39 +153,35 @@ pub fn parse(tokens: &[Tok], nodes_chan: &mut Vec<Node>, debug_parser: bool) -> 
     Ok(())
 }
 
+#[inline]
 fn get_op_priority(t: &Tok) -> i8 {
     // higher number means higher priority
     match t.kind {
         Kind::AccessorOp => 50,
-
         Kind::ModulusOp => 40,
-
         Kind::MultiplyOp | Kind::DivideOp => 25,
-
         Kind::AddOp | Kind::SubtractOp => 20,
-
         Kind::GreaterThanOp | Kind::LessThanOp | Kind::EqualOp => 15,
-
         Kind::AssignOp => 0,
-
         _ => -1,
     }
 }
 
+#[inline]
 fn is_binary_op(t: &Tok) -> bool {
-    match t.kind {
+    matches!(
+        t.kind,
         Kind::AccessorOp
-        | Kind::ModulusOp
-        | Kind::MultiplyOp
-        | Kind::DivideOp
-        | Kind::AddOp
-        | Kind::SubtractOp
-        | Kind::GreaterThanOp
-        | Kind::LessThanOp
-        | Kind::EqualOp
-        | Kind::AssignOp => true,
-        _ => false,
-    }
+            | Kind::ModulusOp
+            | Kind::MultiplyOp
+            | Kind::DivideOp
+            | Kind::AddOp
+            | Kind::SubtractOp
+            | Kind::GreaterThanOp
+            | Kind::LessThanOp
+            | Kind::EqualOp
+            | Kind::AssignOp,
+    )
 }
 
 fn parse_expression(
@@ -269,13 +265,13 @@ fn parse_binary_expr(
             ops.push(tokens[idx].clone());
             idx += 1;
 
-            guard_unexpected_input_end(&tokens, idx)?;
+            guard_unexpected_input_end(tokens, idx)?;
 
             let (right_atom, consumed) = parse_atom(&tokens[idx..], false, col_bound)?;
             nodes.push(right_atom);
             idx += consumed;
         } else {
-            guard_unexpected_input_end(&tokens, idx + 1)?;
+            guard_unexpected_input_end(tokens, idx + 1)?;
 
             // Priority is higher than the previous op, so we need to
             // make it right-heavy
@@ -297,7 +293,7 @@ fn parse_binary_expr(
     let mut tree = nodes[0].clone();
     let mut nodes = &nodes[1..];
 
-    while ops.len() > 0 {
+    while !ops.is_empty() {
         tree = Node::BinaryExpression {
             operator: ops[0].kind.clone(),
             left_operand: Box::new(tree),
@@ -382,7 +378,7 @@ fn parse_atom(
         Kind::Identifier => {
             if idx < tokens.len() && tokens[idx].kind == Kind::Colon {
                 // colon after identifier means the identifier is a function literal
-                (atom, idx) = parse_function_literal(&tokens, col_bound)?;
+                (atom, idx) = parse_function_literal(tokens, col_bound)?;
             } else {
                 atom = Node::Identifier {
                     value: tok.str.clone().expect("this node has this value present"),
@@ -392,17 +388,17 @@ fn parse_atom(
         }
 
         Kind::EmptyIdentifier => {
-            if tokens[idx].kind == Kind::Colon {
-                // colon after identifier means the identifier is a function literal
-                (atom, idx) = parse_function_literal(&tokens, col_bound)?;
-            } else {
-                return Ok((
-                    Node::EmptyIdentifier {
-                        position: tok.position.clone(),
-                    },
-                    idx,
-                ));
-            }
+            // if tokens[idx].kind == Kind::Colon {
+            //     // colon after identifier means the identifier is a function literal
+            //     (atom, idx) = parse_function_literal(&tokens, col_bound)?;
+            // } else {
+            return Ok((
+                Node::EmptyIdentifier {
+                    position: tok.position.clone(),
+                },
+                idx,
+            ));
+            //}
         }
 
         _ => {

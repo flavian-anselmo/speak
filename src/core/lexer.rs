@@ -15,7 +15,6 @@ lazy_static! {
 // of tokens in a Speak program
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
-    // Expr,
     Identifier,
     EmptyIdentifier,
 
@@ -140,7 +139,7 @@ impl Tok {
                 format!(
                     "{} {} [{}]",
                     self.kind.string(),
-                    self.num.clone().unwrap(), // safe to unwrap, types matched always have num
+                    self.num.unwrap(), // safe to unwrap, types matched always have num
                     self.position.string()
                 )
             }
@@ -203,7 +202,7 @@ pub fn tokenize(
             match c {
                 ' ' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -254,7 +253,7 @@ pub fn tokenize(
                 }
                 ':' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -277,7 +276,7 @@ pub fn tokenize(
                 }
                 '_' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -303,7 +302,7 @@ pub fn tokenize(
                 }
                 ',' => {
                     // if there is previous entry, commit it as identifier
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -318,7 +317,7 @@ pub fn tokenize(
                 }
                 '.' => {
                     // if there is a previous entry let's try resolve as [Identifier][AccessorOp][Identifier]
-                    if entry.len() > 0 && IDENTIFIER_REGEX.is_match(&entry) {
+                    if !entry.is_empty() && IDENTIFIER_REGEX.is_match(&entry) {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -339,7 +338,7 @@ pub fn tokenize(
                 }
                 '!' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -354,7 +353,7 @@ pub fn tokenize(
                 }
                 '?' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -369,7 +368,7 @@ pub fn tokenize(
                 }
                 '=' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -387,7 +386,7 @@ pub fn tokenize(
                 }
                 ')' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -402,7 +401,7 @@ pub fn tokenize(
                 }
                 '~' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -417,7 +416,7 @@ pub fn tokenize(
                 }
                 '-' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -438,7 +437,7 @@ pub fn tokenize(
                 }
                 '+' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -453,7 +452,7 @@ pub fn tokenize(
                 }
                 '*' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -467,7 +466,7 @@ pub fn tokenize(
                 }
                 '/' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -488,7 +487,7 @@ pub fn tokenize(
                 }
                 '%' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -503,7 +502,7 @@ pub fn tokenize(
                 }
                 '&' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -518,7 +517,7 @@ pub fn tokenize(
                 }
                 '|' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -533,7 +532,7 @@ pub fn tokenize(
                 }
                 '>' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -548,7 +547,7 @@ pub fn tokenize(
                 }
                 '<' => {
                     // if there is previous entry, commit it as arbitrary
-                    if entry.len() > 0 {
+                    if !entry.is_empty() {
                         commit_arbitrary(
                             entry.clone(),
                             tokens,
@@ -570,7 +569,7 @@ pub fn tokenize(
         }
 
         // commit last entry if present
-        if entry.len() > 0 {
+        if !entry.is_empty() {
             commit_arbitrary(
                 entry.clone(),
                 tokens,
@@ -615,32 +614,33 @@ fn commit_arbitrary(
             },
             tokens,
             debug_lexer,
-        )
+        );
+        Ok(())
     };
 
     match entry.as_str() {
-        "number" => Ok(commit_token(Kind::TypeName(Type::Number), tokens)),
+        "number" => commit_token(Kind::TypeName(Type::Number), tokens),
 
-        "bool" => Ok(commit_token(Kind::TypeName(Type::Bool), tokens)),
+        "bool" => commit_token(Kind::TypeName(Type::Bool), tokens),
 
-        "string" => Ok(commit_token(Kind::TypeName(Type::String), tokens)),
+        "string" => commit_token(Kind::TypeName(Type::String), tokens),
 
-        "->" => Ok(commit_token(Kind::FunctionArrow, tokens)),
+        "->" => commit_token(Kind::FunctionArrow, tokens),
 
-        "true" => Ok(commit_token(Kind::TrueLiteral, tokens)),
+        "true" => commit_token(Kind::TrueLiteral, tokens),
 
-        "false" => Ok(commit_token(Kind::FalseLiteral, tokens)),
+        "false" => commit_token(Kind::FalseLiteral, tokens),
 
-        "()" => Ok(commit_token(Kind::TypeName(Type::Empty), tokens)),
+        "()" => commit_token(Kind::TypeName(Type::Empty), tokens),
 
-        "if" => Ok(commit_token(Kind::If, tokens)),
+        "if" => commit_token(Kind::If, tokens),
 
-        "is" => Ok(commit_token(Kind::AssignOp, tokens)),
+        "is" => commit_token(Kind::AssignOp, tokens),
 
         _ => {
             // check if entry string is numerical
             if let Ok(num) = entry.parse::<f64>() {
-                return Ok(commit(
+                commit(
                     Tok {
                         kind: Kind::NumberLiteral,
                         str: None,
@@ -649,7 +649,8 @@ fn commit_arbitrary(
                     },
                     tokens,
                     debug_lexer,
-                ));
+                );
+                return Ok(());
             }
 
             // identifiers should start with a number: a-z, A-Z, or _
@@ -660,7 +661,7 @@ fn commit_arbitrary(
                 });
             }
 
-            Ok(commit(
+            commit(
                 Tok {
                     kind: Kind::Identifier,
                     str: Some(entry.to_string()),
@@ -669,7 +670,9 @@ fn commit_arbitrary(
                 },
                 tokens,
                 debug_lexer,
-            ))
+            );
+
+            Ok(())
         }
     }
 }

@@ -95,7 +95,7 @@ pub mod value {
                 return format!("{}..", &func_str[..MAX_PRINT_LEN]);
             }
 
-            return func_str;
+            func_str
         }
     }
 
@@ -145,10 +145,10 @@ impl Node {
         match self {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
-            Node::BoolLiteral { value, .. } => Ok(Value::Bool(value.clone())),
+            Node::BoolLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::EmptyIdentifier { .. } => Ok(Value::Empty),
             Node::Identifier { value, position } => {
-                if let Some(val) = stack.get(&value) {
+                if let Some(val) = stack.get(value) {
                     return Ok(val.clone());
                 }
                 Err(Err {
@@ -165,11 +165,11 @@ impl Node {
                     match op {
                         Node::NumberLiteral { value, .. } => {
                             *value = -*value;
-                            Ok(Value::Number(value.clone()))
+                            Ok(Value::Number(*value))
                         }
                         Node::BoolLiteral { value, .. } => {
                             *value = !*value;
-                            Ok(Value::Bool(value.clone()))
+                            Ok(Value::Bool(*value))
                         }
                         _ => Err(Err {
                             message: format!(
@@ -191,7 +191,7 @@ impl Node {
 
                         Node::Identifier { value, position } => {
                             if let Some(_val) = stack.get(value) {
-                                return Ok(mut_operand(operand)?);
+                                return mut_operand(operand);
                             }
                             return Err(Err {
                                 message: format!(
@@ -202,31 +202,27 @@ impl Node {
                                 reason: ErrorReason::System,
                             });
                         }
-                        _ => {
-                            return Err(Err {
-                                message: format!(
-                                    "invalid unary operand {}, at {}",
-                                    operand.string(),
-                                    position.string()
-                                ),
-                                reason: ErrorReason::Syntax,
-                            })
-                        }
-                    },
-
-                    _ => {
-                        return Err(Err {
+                        _ => Err(Err {
                             message: format!(
-                                "invalid unary operator {}, at {}",
-                                operator.string(),
+                                "invalid unary operand {}, at {}",
+                                operand.string(),
                                 position.string()
                             ),
                             reason: ErrorReason::Syntax,
-                        });
-                    }
+                        }),
+                    },
+
+                    _ => Err(Err {
+                        message: format!(
+                            "invalid unary operator {}, at {}",
+                            operator.string(),
+                            position.string()
+                        ),
+                        reason: ErrorReason::Syntax,
+                    }),
                 }
             }
-            Node::BinaryExpression { .. } => eval_binary_expr_node(&self, stack, &allow_thunk),
+            Node::BinaryExpression { .. } => eval_binary_expr_node(self, stack, &allow_thunk),
             Node::FunctionCall {
                 function,
                 arguments,
@@ -263,7 +259,7 @@ impl Node {
                     }),
                 }
             }
-            Node::IfExpr { .. } => eval_if_expr_node(&self, stack, allow_thunk),
+            Node::IfExpr { .. } => eval_if_expr_node(self, stack, allow_thunk),
         }
     }
 }
@@ -278,46 +274,44 @@ fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> 
     {
         // assert that condition evaluates to boolean value
         let mut condition = condition.as_ref().clone();
-        let val = condition.eval(stack, allow_thunk.clone())?;
+        let val = condition.eval(stack, allow_thunk)?;
         let mut ret = |val| {
             if val {
-                match on_true {
+                return match on_true {
                     Some(on_true) => {
                         let mut on_true = on_true.as_ref().clone();
-                        return on_true.eval(stack, allow_thunk);
+                        on_true.eval(stack, allow_thunk)
                     }
-                    None => return Ok(Value::Empty),
-                }
+                    None => Ok(Value::Empty),
+                };
             }
             match on_false {
                 Some(on_false) => {
                     let mut on_false = on_false.as_ref().clone();
-                    return on_false.eval(stack, allow_thunk);
+                    on_false.eval(stack, allow_thunk)
                 }
-                None => return Ok(Value::Empty),
+                None => Ok(Value::Empty),
             }
         };
 
-        match val {
-            Value::Bool(val) => return ret(val),
-            Value::String(str) => return ret(str.is_empty()),
-            _ => {
-                return Err(Err {
-                    message: format!(
-                        "the codition, ({}) at [{}], does not evaluate to bool value",
-                        condition.string(),
-                        node.position().string()
-                    ),
-                    reason: ErrorReason::Runtime,
-                });
-            }
-        }
+        return match val {
+            Value::Bool(val) => ret(val),
+            Value::String(str) => ret(str.is_empty()),
+            _ => Err(Err {
+                message: format!(
+                    "the codition, ({}) at [{}], does not evaluate to bool value",
+                    condition.string(),
+                    node.position().string()
+                ),
+                reason: ErrorReason::Runtime,
+            }),
+        };
     }
 
-    return Err(Err {
+    Err(Err {
         reason: ErrorReason::System,
         message: "".to_string(),
-    });
+    })
 }
 
 fn eval_binary_expr_node(
@@ -438,8 +432,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Syntax,
                         })
                     }
@@ -468,8 +461,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Syntax,
                         })
                     }
@@ -486,8 +478,7 @@ fn eval_binary_expr_node(
                                     message: format!(
                                         "decision by zero error [{}]",
                                         right_operand.position().string()
-                                    )
-                                    .to_string(),
+                                    ),
                                     reason: ErrorReason::Runtime,
                                 });
                             }
@@ -502,8 +493,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Syntax,
                         })
                     }
@@ -520,8 +510,7 @@ fn eval_binary_expr_node(
                                     message: format!(
                                         "decision by zero error in modulus [{}]",
                                         right_operand.position().string()
-                                    )
-                                    .to_string(),
+                                    ),
                                     reason: ErrorReason::Runtime,
                                 });
                             }
@@ -535,8 +524,7 @@ fn eval_binary_expr_node(
                                 "cannot take modulus of non-integer value {}, at [{}]",
                                 right_value.string(),
                                 left_operand.position().string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Syntax,
                         })
                     }
@@ -564,8 +552,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Runtime,
                         });
                     }
@@ -583,8 +570,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Syntax,
                         })
                     }
@@ -612,8 +598,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Runtime,
                         });
                     }
@@ -631,8 +616,7 @@ fn eval_binary_expr_node(
                                 left_value.string(),
                                 right_value.string(),
                                 position.string()
-                            )
-                            .to_string(),
+                            ),
                             reason: ErrorReason::Syntax,
                         })
                     }
@@ -744,7 +728,12 @@ fn eval_speak_function(
                             // assert the arg value types match
                             if args[i].value_type().string() != arg_type.string() {
                                 return Err(Err {
-                                    message: format!(""),
+                                    message: format!(
+                                        "expected arg type of ({}) but got ({}), for {} arg to ({})",
+                                        arg_type.string(),
+                                        args[i].value_type().string(),
+                                        i +1, fn_value.string()
+                                    ),
                                     reason: ErrorReason::Runtime,
                                 });
                             }
@@ -825,10 +814,12 @@ fn eval_speak_function(
 // Expands out a recursive structure of thunks into a flat for loop control structure
 fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err> {
     let mut is_thunk = true;
+    let mut stacks_added = 0;
     'UNWRAP: while is_thunk {
         match thunk {
             Value::FunctionCallThunk { func, vt, .. } => {
-                stack.push_frame(vt.clone()); // TODO: pop frames after use
+                stack.push_frame(vt.clone());
+                stacks_added += 1;
 
                 let defn = func.defn.as_mut();
                 match defn {
@@ -847,6 +838,11 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
                                 _ => {
                                     // if the return type is that of the signature, return
                                     if val.value_type().string() == signature.2.string() {
+                                        // pop stacks that were added, to free memory
+                                        for _ in 1..=stacks_added {
+                                            stack.pop_frame()?;
+                                        }
+
                                         return Ok(val);
                                     }
                                 }
@@ -897,7 +893,7 @@ fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
             });
         }
         Node::EmptyIdentifier { .. } => Err(Err {
-            message: format!("cannot assign an empty identifier a value"),
+            message: "cannot assign an empty identifier a value".to_string(),
             reason: ErrorReason::Runtime,
         }),
         Node::FunctionLiteral { .. } => Ok(Value::Function(Function { defn: Box::new(op) })),
