@@ -18,6 +18,8 @@ It is expressive and dynamically typed (although all function signatures must be
 This language is directly inspired by Linus Lee's work on his language [ink](https://www.github.com/thesephist/ink) and his talk from GopherCon [here](https://www.youtube.com/watch?v=ALwmdcFiuGg&t=168s). Examples on how its intended to look like can be found in the samples directory. There's no formal specification yet, so far it's experimental.
 
 ## Introduction
+Below programs can run with the current interpreter implementation.
+
 Here is an implementation of FizzBuzz in Speak, with default `English` configuration.
 ```spk
 // speak fizzbuzz implementation
@@ -28,5 +30,18 @@ fizzbuzz: n number -> string
     sprint n
 
 // call with 100
-printf "fizzbuzz result for {} is {}" 45 (fizzbuzz 45)
+printf "fizzbuzz result for {} is {}" 100 (fizzbuzz 100)
+printf "fizzbuzz result for {} is {} itself" 7 (fizzbuzz 7)
+```
+
+Fibonacci sequence:
+```spk
+// Fibonacci sequence generator
+// naive implementation
+fib: n number -> number
+    if n = 0 ? 0
+    if n = 1 ? 1
+    (fib n - 1) + (fib n - 2)
+
+printf "Naive solution (fib 20) is: {}" (fib 20)
 ```

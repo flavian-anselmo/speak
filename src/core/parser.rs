@@ -20,6 +20,11 @@ pub enum Node {
         value: bool,
         position: Position,
     },
+    ObjectLiteral {
+        name: String,
+        value: Vec<(String, Node)>,
+        position: Position,
+    },
     EmptyIdentifier {
         position: Position,
     },
@@ -44,7 +49,7 @@ pub enum Node {
         position: Position,
     },
     FunctionLiteral {
-        signature: (Box<Node>, Vec<(Node, Node)>, Box<Node>),
+        sign: (Box<Node>, Vec<(Node, Node)>, Box<Node>),
         body: Vec<Node>,
         position: Position,
     },
@@ -62,6 +67,19 @@ impl Node {
             Node::NumberLiteral { value, .. } => value.to_string(),
             Node::StringLiteral { value, .. } => value.clone(),
             Node::BoolLiteral { value, .. } => value.to_string(),
+            Node::ObjectLiteral { name, value, .. } => {
+                format!(
+                    "Object ({}) {{\n{}}}",
+                    name,
+                    value.iter().fold(String::new(), |acc, (field_name, _)| {
+                        if acc.is_empty() {
+                            field_name.clone()
+                        } else {
+                            format!("\n{}", field_name)
+                        }
+                    })
+                )
+            }
             Node::EmptyIdentifier { .. } => "".to_string(),
             Node::Identifier { value, .. } => value.clone(),
             Node::UnaryExpression {
@@ -90,7 +108,9 @@ impl Node {
                 }
                 format!("Call ({}) on ({})", function.string(), args)
             }
-            Node::FunctionLiteral { signature, .. } => format!(
+            Node::FunctionLiteral {
+                sign: signature, ..
+            } => format!(
                 "Function ({}): {} -> {}",
                 signature.0.position().string(),
                 signature.1.iter().fold(String::new(), |acc, (_, l)| {
@@ -125,6 +145,7 @@ impl Node {
             Node::NumberLiteral { position, .. } => position,
             Node::StringLiteral { position, .. } => position,
             Node::BoolLiteral { position, .. } => position,
+            Node::ObjectLiteral { position, .. } => position,
             Node::EmptyIdentifier { position } => position,
             Node::Identifier { position, .. } => position,
             Node::UnaryExpression { position, .. } => position,
@@ -224,20 +245,17 @@ fn parse_expression(
             Ok((bin_expr, idx))
         }
 
-        _ => {
-            if parsing_fn_args {
-                return Ok((atom, idx - 1));
-            }
-
-            Err(Err {
+        _ => match parsing_fn_args {
+            true => Ok((atom, idx - 1)),
+            false => Err(Err {
                 message: format!(
                     "unexpected token {} at {}, following an expression",
                     next_tok.kind.string(),
                     next_tok.position.string()
                 ),
                 reason: ErrorReason::Syntax,
-            })
-        }
+            }),
+        },
     }
 }
 
@@ -338,7 +356,7 @@ fn parse_atom(
         Kind::NumberLiteral => {
             return Ok((
                 Node::NumberLiteral {
-                    value: tok.num.clone().expect("this node has this value present"),
+                    value: tok.num.expect("this node has this value present"),
                     position: tok.position.clone(),
                 },
                 idx,
@@ -376,29 +394,34 @@ fn parse_atom(
         }
 
         Kind::Identifier => {
-            if idx < tokens.len() && tokens[idx].kind == Kind::Colon {
-                // colon after identifier means the identifier is a function literal
-                (atom, idx) = parse_function_literal(tokens, col_bound)?;
-            } else {
-                atom = Node::Identifier {
-                    value: tok.str.clone().expect("this node has this value present"),
-                    position: tok.position.clone(),
-                };
+            atom = Node::Identifier {
+                value: tok.str.clone().expect("this node has this value present"),
+                position: tok.position.clone(),
+            };
+            if idx < tokens.len() {
+                match tokens[idx].kind {
+                    Kind::Colon => {
+                        // colon after identifier means the identifier is a function literal
+                        (atom, idx) = parse_function_literal(tokens, col_bound)?;
+                    }
+                    Kind::LeftBrace => {
+                        // this is the start of an object literal
+                        guard_unexpected_input_end(tokens, idx + 1)?;
+                        (atom, idx) = parse_object_literal(&tokens[idx + 1..], atom)?;
+                        idx += 2; // +1 for Kind::LeftBrace, +1 for previous overwritten value of idx
+                    }
+                    _ => {}
+                }
             }
         }
 
         Kind::EmptyIdentifier => {
-            // if tokens[idx].kind == Kind::Colon {
-            //     // colon after identifier means the identifier is a function literal
-            //     (atom, idx) = parse_function_literal(&tokens, col_bound)?;
-            // } else {
             return Ok((
                 Node::EmptyIdentifier {
                     position: tok.position.clone(),
                 },
                 idx,
             ));
-            //}
         }
 
         _ => {
@@ -443,16 +466,99 @@ fn parse_capsulated_expr(
     let idx = idx + consumed;
 
     guard_unexpected_input_end(tokens, idx)?;
-    if tokens[idx].kind != Kind::RightParen {
-        return Err(Err {
+
+    match tokens[idx].kind {
+        Kind::RightParen => Ok((atom, idx + 1)), // +1 for the RightParen
+        _ => Err(Err {
             message: format!(
                 "the expression expected ')' after [{}]",
                 tokens[idx - 1].string()
             ),
             reason: ErrorReason::Syntax,
-        });
+        }),
     }
-    return Ok((atom, idx + 1)); // +1 for the RightParen
+}
+
+fn parse_object_literal(tokens: &[Tok], name: Node) -> Result<(Node, usize), Err> {
+    let mut idx = 0;
+    let mut value = Vec::new();
+
+    while idx < tokens.len() && tokens[idx].kind != Kind::RightBrace {
+        // ident ident separator || ident separator
+        let field_name = match tokens[idx].kind {
+            Kind::Identifier => Ok(Node::Identifier {
+                value: tokens[idx]
+                    .str
+                    .clone()
+                    .expect("identifier kind always has this value present in it's token"),
+                position: tokens[idx].position.clone(),
+            }),
+            _ => Err(Err {
+                reason: ErrorReason::Syntax,
+                message: format!(
+                    "parsing objected literal, expected identifier at [{}]",
+                    tokens[idx].position.string()
+                ),
+            }),
+        }?;
+        idx += 1; // +1 for Kind::Identifier consumed
+
+        guard_unexpected_input_end(tokens, idx)?;
+
+        // ident separator || separator
+        let field_value = match tokens[idx].kind {
+            Kind::Separator => {
+                idx += 1; // +1 for Kind::Separator consumed
+                Ok(field_name.clone())
+            }
+            Kind::Identifier => {
+                let field_value = Node::Identifier {
+                    value: tokens[idx]
+                        .str
+                        .clone()
+                        .expect("identifier kind always has this value present in it's token"),
+                    position: tokens[idx].position.clone(),
+                };
+
+                idx += 1; // +1 for Kind::Identifier consumed
+                guard_unexpected_input_end(tokens, idx)?;
+
+                match tokens[idx].kind {
+                    Kind::Separator => {
+                        idx += 1; // +1 for Kind::Separator consumed
+                        Ok(field_value)
+                    }
+                    Kind::RightBrace => Ok(field_value),
+                    _ => Err(Err {
+                        reason: ErrorReason::Syntax,
+                        message: format!(
+                            "parsing objected literal, expected identifier at [{}]",
+                            tokens[idx].position.string()
+                        ),
+                    }),
+                }
+            }
+            _ => Err(Err {
+                reason: ErrorReason::Syntax,
+                message: format!(
+                    "parsing objected literal, expected identifier/separator at [{}]",
+                    tokens[idx].position.string(),
+                ),
+            }),
+        }?;
+
+        value.push((field_name.string(), field_value));
+    }
+
+    idx += 1; // +1 for Kind::RightBrace consumed
+    Ok((
+        Node::ObjectLiteral {
+            name: name.string(),
+            value,
+            position: name.position().clone(),
+        },
+        idx,
+    ))
 }
 
 fn parse_if_expr(tokens: &[Tok], col_bound: usize) -> Result<(Node, usize), Err> {
@@ -534,29 +640,22 @@ fn parse_function_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usi
     }
 
     // parse the function's name/identifier
-    let fn_name: Node;
-    match tokens[0].kind {
-        Kind::Identifier => {
-            fn_name = Node::Identifier {
-                value: tokens[0]
-                    .str
-                    .clone()
-                    .expect("this value is present in an identifier token"),
-                position: tokens[0].position.clone(),
-            };
-        }
-        Kind::EmptyIdentifier => {
-            fn_name = Node::EmptyIdentifier {
-                position: tokens[0].position.clone(),
-            }
-        }
-        _ => {
-            return Err(Err {
-                message: "".to_string(),
-                reason: ErrorReason::Assert,
-            })
-        }
-    }
+    let fn_name = match tokens[0].kind {
+        Kind::Identifier => Ok(Node::Identifier {
+            value: tokens[0]
+                .str
+                .clone()
+                .expect("this value is present in an identifier token"),
+            position: tokens[0].position.clone(),
+        }),
+        Kind::EmptyIdentifier => Ok(Node::EmptyIdentifier {
+            position: tokens[0].position.clone(),
+        }),
+        _ => Err(Err {
+            message: "".to_string(),
+            reason: ErrorReason::Assert,
+        }),
+    }?;
 
     let mut idx = 2;
     guard_unexpected_input_end(tokens, idx)?;
@@ -567,23 +666,29 @@ fn parse_function_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usi
 
     // parse function's return type
     guard_unexpected_input_end(tokens, idx)?;
-    let ret_type: Node;
-    if let Kind::TypeName(x) = &tokens[idx].kind {
-        ret_type = Node::Identifier {
+
+    let ret_type = match &tokens[idx].kind {
+        Kind::Identifier => Ok(Node::Identifier {
+            value: tokens[idx]
+                .str
+                .clone()
+                .expect("this value is present in an identifer token"),
+            position: tokens[idx].position.clone(),
+        }),
+        Kind::TypeName(x) => Ok(Node::Identifier {
             value: x.string(),
             position: tokens[idx].position.clone(),
-        };
-        idx += 1;
-    } else {
-        return Err(Err {
+        }),
+        _ => Err(Err {
             message: format!(
                 "expected a type, found ({}) at [{}]",
                 tokens[idx].kind.string(),
                 tokens[idx].position.string()
             ),
             reason: ErrorReason::Syntax,
-        });
-    }
+        }),
+    }?;
+    idx += 1; // +1 for the Kind::Identifier consumed
 
     // parse the function's body
     guard_unexpected_input_end(tokens, idx)?;
@@ -597,14 +702,14 @@ fn parse_function_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usi
 
     // compose the parsed components into a function literal
     let position = fn_name.position().clone();
-    return Ok((
+    Ok((
         Node::FunctionLiteral {
-            signature: (Box::new(fn_name), args, Box::new(ret_type)),
+            sign: (Box::new(fn_name), args, Box::new(ret_type)),
             body,
             position,
         },
         idx,
-    ));
+    ))
 }
 
 /// takes a token stream of the function signature, parses it and returns the function arguments signature.

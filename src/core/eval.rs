@@ -1,4 +1,7 @@
-use self::value::{Function, Value};
+use self::{
+    r#type::Type,
+    value::{Function, Value},
+};
 use super::{
     error::{Err, ErrorReason},
     lexer::Kind,
@@ -19,13 +22,14 @@ pub mod r#type {
         /// String type.
         String,
 
+        /// Object type.
+        Object(String),
+
         // Function type.
         Function,
 
         // Empty type.
         Empty,
-
-        Nil,
     }
 
     // type aliases
@@ -35,9 +39,9 @@ pub mod r#type {
                 Type::Number => "number".to_string(),
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
+                Type::Object(obj) => format!("object: {}", obj),
                 Type::Function => "function".to_string(),
                 Type::Empty => "()".to_string(),
-                Type::Nil => "".to_string(),
             }
         }
     }
@@ -49,7 +53,7 @@ pub mod value {
         parser::Node,
         runtime::{NativeFn, VTable, MAX_PRINT_LEN},
     };
-    use std::fmt::Debug;
+    use std::{collections::HashMap, fmt::Debug};
 
     /// Value represents any value in the Speak programming language.
     /// Each value corresponds to some primitive or object value created
@@ -59,6 +63,12 @@ pub mod value {
         Number(f64),
         Bool(bool),
         String(String),
+
+        /// This is a composite value representing an object in the Speak language.
+        Object {
+            name: String,
+            body: HashMap<String, (Type, Value)>,
+        },
 
         /// This is the value of any variables referencing functions
         /// defined in a Speak program.
@@ -76,16 +86,12 @@ pub mod value {
         },
 
         Empty,
-
-        /// This is a convenience type that is not used by the programmer but
-        /// helpful in returns from expressions that do not evaluate to values.
-        _Nil,
     }
 
     #[derive(Debug, Clone)]
     pub struct Function {
         // defn must be of variant `FunctionLiteral`.
-        pub defn: Box<Node>,
+        pub defn: Node,
     }
 
     impl Function {
@@ -105,11 +111,11 @@ pub mod value {
                 Value::Number(_) => Type::Number,
                 Value::Bool(_) => Type::Bool,
                 Value::String(_) => Type::String,
+                Value::Object { name, .. } => Type::Object(name.clone()),
                 Value::Function { .. }
                 | Value::FunctionCallThunk { .. }
                 | Value::NativeFunction(..) => Type::Function,
                 Value::Empty => Type::Empty,
-                Value::_Nil => Type::Nil,
             }
         }
 
@@ -128,13 +134,13 @@ pub mod value {
                 Value::Number(value) => value.to_string(),
                 Value::Bool(value) => value.to_string(),
                 Value::String(value) => value.to_string(),
+                Value::Object { name, .. } => format!("Object ({})", name),
                 Value::Function(func) => func.string(),
                 Value::NativeFunction(func) => format!("Native Function ({})", func.0),
                 Value::FunctionCallThunk { func, .. } => {
                     format!("Thunk of ({})", func.string())
                 }
-                Value::Empty => "()".to_string(),
-                Value::_Nil => "".to_string(),
+                Value::Empty => "".to_string(),
             }
         }
     }
@@ -146,6 +152,19 @@ impl Node {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
             Node::BoolLiteral { value, .. } => Ok(Value::Bool(*value)),
+            Node::ObjectLiteral { name, value, .. } => {
+                let mut body = HashMap::new();
+                for (field_name, val) in value {
+                    // first node must be an identifier
+                    let val = val.eval(stack, false)?;
+                    body.insert(field_name.clone(), (val.value_type(), val));
+                }
+
+                Ok(Value::Object {
+                    name: name.clone(),
+                    body,
+                })
+            }
             Node::EmptyIdentifier { .. } => Ok(Value::Empty),
             Node::Identifier { value, position } => {
                 if let Some(val) = stack.get(value) {
@@ -234,26 +253,27 @@ impl Node {
                 }
 
                 let fn_value = &function.eval(stack, false)?;
-                eval_speak_function(stack, fn_value, allow_thunk, &arg_results)
+
+                let res = eval_speak_function(stack, fn_value, allow_thunk, &arg_results)?;
+
+                Ok(res)
             }
-            Node::FunctionLiteral { signature, .. } => {
+            Node::FunctionLiteral { sign, .. } => {
                 // place the function literal on the current stack and return no value
-                match signature.0.as_ref() {
+                match sign.0.as_ref() {
                     Node::Identifier { value, .. } => {
                         stack.set(
                             value.clone(),
-                            Value::Function(Function {
-                                defn: Box::new(self.clone()),
-                            }),
+                            Value::Function(Function { defn: self.clone() }),
                         );
 
-                        Ok(Value::_Nil)
+                        Ok(Value::Empty)
                     }
                     _ => Err(Err {
                         message: format!(
                             "expected identifier node but got {} at [{}]",
-                            signature.0.string(),
-                            signature.0.position().string()
+                            sign.0.string(),
+                            sign.0.position().string()
                         ),
                         reason: ErrorReason::Assert,
                     }),
@@ -328,8 +348,14 @@ fn eval_binary_expr_node(
     {
         let mut left_right = || -> Result<(Value, Value), Err> {
             Ok((
-                to_value(left_operand.as_ref().clone(), stack)?,
-                to_value(right_operand.as_ref().clone(), stack)?,
+                {
+                    let mut l = left_operand.as_ref().clone();
+                    l.eval(stack, false)?
+                },
+                {
+                    let mut r = right_operand.as_ref().clone();
+                    r.eval(stack, false)?
+                },
             ))
         };
 
@@ -338,24 +364,65 @@ fn eval_binary_expr_node(
                 match left_operand.as_ref() {
                     Node::Identifier { value, .. } => {
                         // right operand node must evaluate to a value
-                        let right_value = to_value(right_operand.as_ref().clone(), stack)?;
+                        let mut r = right_operand.as_ref().clone();
+                        let right_value = r.eval(stack, false)?;
                         stack.set(value.clone(), right_value.clone());
                         return Ok(right_value);
                     }
 
                     Node::BinaryExpression {
-                        operator: _l_operator,
-                        left_operand: _l_left_operand,
-                        right_operand: _l_right_operand,
-                        position: _l_position,
+                        operator: l_operator,
+                        left_operand: l_left_operand,
+                        right_operand: l_right_operand,
+                        position: l_position,
                     } => {
-                        if let Kind::AccessorOp = _l_operator {
-                            unimplemented!() // method access
+                        if let Kind::AccessorOp = l_operator {
+                            // left operand is stack name for object
+                            let object = l_left_operand.as_ref().clone().eval(stack, false)?;
+                            // right operand is the field value
+                            let object_field = l_right_operand.string();
+
+                            // mutate field value
+                            match &mut object.clone() {
+                                Value::Object { name, body } => {
+                                    match body.contains_key(&object_field) {
+                                        true => {
+                                            let right_value = right_operand.as_ref().clone().eval(stack, false)?;
+                                            body.insert(
+                                                object_field,
+                                                (right_value.value_type(), right_value),
+                                            );
+
+                                            stack.up(name.clone(), &object)?;
+                                            return Ok(object);
+                                        }
+                                        false => {
+                                            return Err(Err {
+                                                reason: ErrorReason::Runtime,
+                                                message: format!(
+                                                "invalid property name {} of composite value {}, at [{}]",
+                                                name,
+                                                object.string(), l_position.string()
+                                            ),
+                                            })
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    return Err(Err {
+                                        reason: ErrorReason::System,
+                                        message: format!(
+                                            "composite value {} unknown",
+                                            object.string()
+                                        ),
+                                    })
+                                }
+                            }
                         } else {
                             return Err(Err {
                                 message: format!(
                                     "cannot assing value to non-identifier {}, at [{}]",
-                                    _l_left_operand.string(),
+                                    l_left_operand.string(),
                                     left_operand.position().string(),
                                 ),
                                 reason: ErrorReason::Runtime,
@@ -378,7 +445,36 @@ fn eval_binary_expr_node(
             }
 
             Kind::AccessorOp => {
-                unimplemented!() // method access
+                // left operand is stack name for object; right operand is the value
+                let mut left_operand = left_operand.as_ref().clone();
+                let object = left_operand.eval(stack, false)?;
+                let object_field = right_operand.string();
+
+                match &object {
+                    Value::Object { name, body } => match body.contains_key(&object_field) {
+                        true => {
+                            let (_, val) =
+                                body.get(&object_field).expect("check done, value exists");
+                            return Ok(val.clone());
+                        }
+                        false => {
+                            return Err(Err {
+                                reason: ErrorReason::Runtime,
+                                message: format!(
+                                    "invalid property name {} of composite value {}",
+                                    name,
+                                    object.string(),
+                                ),
+                            })
+                        }
+                    },
+                    _ => {
+                        return Err(Err {
+                            reason: ErrorReason::System,
+                            message: format!("composite value {} unknown", object.string()),
+                        })
+                    }
+                }
             }
 
             Kind::AddOp => {
@@ -707,7 +803,11 @@ fn eval_binary_expr_node(
     }
     return Err(Err {
         reason: ErrorReason::Assert,
-        message: format!("node provided is not a BinaryExprNode"),
+        message: format!(
+            "node, ({}), provided at [{}] is not a BinaryExprNode",
+            node.string(),
+            node.position().string()
+        ),
     });
 }
 
@@ -720,10 +820,10 @@ fn eval_speak_function(
 ) -> Result<Value, Err> {
     match fn_value {
         Value::Function(func) => {
-            match func.defn.as_ref() {
-                Node::FunctionLiteral { signature, .. } => {
+            match &func.defn {
+                Node::FunctionLiteral { sign, .. } => {
                     let mut arg_vtable = HashMap::new();
-                    for (i, (arg_ident, arg_type)) in signature.1.iter().enumerate() {
+                    for (i, (arg_ident, arg_type)) in sign.1.iter().enumerate() {
                         if i < args.len() {
                             // assert the arg value types match
                             if args[i].value_type().string() != arg_type.string() {
@@ -763,30 +863,15 @@ fn eval_speak_function(
 
                     // assert that the return value is what was in the function signature
                     let res = unwrap_thunk(stack, &mut return_thunk)?;
-
-                    match signature.2.as_ref() {
-                        Node::Identifier { value, .. } => {
-                            if res.value_type().string() != *value {
-                                return Err(Err {
-                                    reason: ErrorReason::Runtime,
-                                    message: format!(
-                                        "the return type expected ({}) but got ({})",
-                                        value,
-                                        res.value_type().string()
-                                    ),
-                                });
-                            }
-                            return Ok(res);
-                        }
-                        _ => {
-                            return Err(Err {
-                                reason: ErrorReason::Assert,
-                                message: format!(
+                    match sign.2.as_ref() {
+                        Node::Identifier { .. } => Ok(res),
+                        _ => Err(Err {
+                            reason: ErrorReason::Assert,
+                            message: format!(
                                 "expected the return type to be an identifier node but got ({})",
-                                signature.2.string(),
+                                sign.2.string(),
                             ),
-                            })
-                        }
+                        }),
                     }
                 }
 
@@ -821,11 +906,9 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
                 stack.push_frame(vt.clone());
                 stacks_added += 1;
 
-                let defn = func.defn.as_mut();
+                let defn = &mut func.defn;
                 match defn {
-                    Node::FunctionLiteral {
-                        signature, body, ..
-                    } => {
+                    Node::FunctionLiteral { sign, body, .. } => {
                         let mut val: Value;
                         for stmt in body {
                             val = stmt.eval(stack, true)?;
@@ -837,7 +920,11 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
 
                                 _ => {
                                     // if the return type is that of the signature, return
-                                    if val.value_type().string() == signature.2.string() {
+                                    if match val.value_type() {
+                                        Type::Object(obj) => obj,
+                                        _ => val.value_type().string(),
+                                    } == sign.2.string()
+                                    {
                                         // pop stacks that were added, to free memory
                                         for _ in 1..=stacks_added {
                                             stack.pop_frame()?;
@@ -870,40 +957,6 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
     }
 
     unimplemented!("this code is never called")
-}
-
-fn to_value(op: Node, stack: &mut StackFrame) -> Result<Value, Err> {
-    let mut op = op;
-    let _str = op.string();
-    match op {
-        Node::StringLiteral { value, .. } => Ok(Value::String(value)),
-        Node::NumberLiteral { value, .. } => Ok(Value::Number(value)),
-        Node::BoolLiteral { value, .. } => Ok(Value::Bool(value)),
-        Node::Identifier { value, .. } => {
-            if let Some(val) = stack.get(&value) {
-                return Ok(val.clone());
-            }
-
-            return Err(Err {
-                message: format!(
-                    "value for identifier, {},  not found in stack for node {}",
-                    value, _str
-                ),
-                reason: ErrorReason::Runtime,
-            });
-        }
-        Node::EmptyIdentifier { .. } => Err(Err {
-            message: "cannot assign an empty identifier a value".to_string(),
-            reason: ErrorReason::Runtime,
-        }),
-        Node::FunctionLiteral { .. } => Ok(Value::Function(Function { defn: Box::new(op) })),
-        Node::BinaryExpression { .. } => op.eval(stack, false),
-        Node::FunctionCall { .. } => op.eval(stack, false),
-        _ => Err(Err {
-            message: "cannot resolve to concrete value of node provided".to_string(),
-            reason: ErrorReason::System,
-        }),
-    }
 }
 
 fn is_intable(num: &f64) -> bool {

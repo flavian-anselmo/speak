@@ -45,8 +45,7 @@ impl StackFrame {
         }
     }
 
-    /// Pushes a frame to the stack and sets it's current frame as the parent frame and
-    /// the new frane as the new current frame.
+    /// Pushes a frame to the stack and sets it's current frame as the parent frame.
     pub fn push_frame(&mut self, frame: VTable) {
         *self = Self::Frame {
             frame,
@@ -54,8 +53,7 @@ impl StackFrame {
         };
     }
 
-    /// Pops a child frame from the stack and sets it's parent frame as the current
-    /// frame on the stack.
+    /// Pops a child frame from the stack, setting it's parent frame as the current frame.
     pub fn pop_frame(&mut self) -> Result<(), Err> {
         match self {
             StackFrame::Frame { parent_frame, .. } => {
@@ -69,7 +67,7 @@ impl StackFrame {
         }
     }
 
-    /// Get a value from the current stack frame chain.
+    /// Get a value from the current stack frame; or up the parent frames.
     pub fn get(&self, name: &str) -> Option<&Value> {
         let mut frame = self;
         while let StackFrame::Frame {
@@ -84,8 +82,7 @@ impl StackFrame {
                 }
             }
         }
-
-        return None;
+        None
     }
 
     /// Sets a value to the provided stack frame.
@@ -95,21 +92,21 @@ impl StackFrame {
         }
     }
 
-    /// Updates a value in the stack frame chain.
-    fn up(&mut self, name: String, val: Value) -> Result<(), Err> {
+    /// Updates a value in the current frame; or up the parent frames.
+    pub fn up(&mut self, name: String, val: &Value) -> Result<(), Err> {
         let mut frame = self;
         while let StackFrame::Frame {
             frame: item,
-            parent_frame: next,
+            parent_frame,
         } = frame
         {
             match item.get(&name) {
                 Some(_) => {
-                    item.0.insert(name, val);
+                    item.0.insert(name, val.clone());
                     return Ok(());
                 }
                 None => {
-                    frame = next;
+                    frame = parent_frame;
                 }
             }
         }
@@ -145,8 +142,7 @@ impl StackFrame {
                 next
             ));
         }
-
-        return None;
+        None
     }
 }
 
@@ -198,8 +194,7 @@ impl Context {
         // load runtime
         load_builtins(self)?;
 
-        let mut iter = nodes.into_iter().enumerate();
-        while let Some((i, node)) = iter.next() {
+        for (i, node) in nodes.into_iter().enumerate() {
             let mut node = node;
             let val = node.eval(&mut self.frame, false)?;
             if i == len - 1 {
@@ -272,7 +267,7 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                             .fold(String::new(), |acc, x| acc + &x.string())
                     );
 
-                    Ok(Value::_Nil)
+                    Ok(Value::Empty)
                 })),
             );
 
@@ -332,7 +327,7 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                         )
                     );
 
-                    Ok(Value::_Nil)
+                    Ok(Value::Empty)
                 })),
             );
 
@@ -346,8 +341,12 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                         });
                     }
 
-                    // todo: check if input is a string or list, fail for number
-                    Ok(Value::Number(inputs.len() as f64))
+                    match &inputs[0] {
+                        Value::String(_str) => Ok(Value::Number(_str.len() as f64)),
+
+                        // todo: check if input is a string or list, fail for number
+                        _ => Ok(Value::Number(inputs.len() as f64)),
+                    }
                 })),
             );
 
@@ -372,7 +371,7 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                             }
                         }
 
-                        Ok(Value::_Nil)
+                        Ok(Value::Empty)
                     },
                 )),
             );
@@ -410,7 +409,7 @@ mod tests {
 
         // test stackframe.up(), stackframe.get()
         frame
-            .up("a".to_string(), Value::String("mutated value".to_string()))
+            .up("a".to_string(), &Value::String("mutated value".to_string()))
             .expect("this calls to an already initialized variable on the stack");
         assert!(frame
             .get("a")

@@ -1,0 +1,14 @@
+name is "Osoro"
+sex is "Male"
+_age is 23 
+
+create_person: name string -> Person
+    x is Person {
+        name,
+        sex,
+        age _age,
+    }
+    x.age = x.age -2
+
+x is create_person "OtherGuy"
+println x.name

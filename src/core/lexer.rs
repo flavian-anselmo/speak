@@ -51,8 +51,10 @@ pub enum Kind {
 
     LeftParen,
     RightParen,
-    // LeftBracket,
-    // RightBracket,
+    LeftBrace,
+    RightBrace,
+    LeftBracket,
+    RightBracket,
 }
 
 impl Kind {
@@ -95,8 +97,10 @@ impl Kind {
 
             Kind::LeftParen => "'('".to_string(),
             Kind::RightParen => "')'".to_string(),
-            // Kind::LeftBracket => "'['".to_string(),
-            // Kind::RightBracket => "']'".to_string(),
+            Kind::LeftBrace => "'{'".to_string(),
+            Kind::RightBrace => "'}'".to_string(),
+            Kind::LeftBracket => "'['".to_string(),
+            Kind::RightBracket => "']'".to_string(),
         }
     }
 }
@@ -157,12 +161,7 @@ pub fn tokenize(
     debug_lexer: bool,
 ) -> Result<(), Err> {
     // helper calculate column fn
-    let col_fn = |col, len| {
-        if len == 1 {
-            return col;
-        }
-        return col - (len - 1);
-    };
+    let col_fn = |col, len| if len == 1 { col } else { col - (len - 1) };
 
     // read a complete line while parsing
     let mut line = 1;
@@ -199,19 +198,25 @@ pub fn tokenize(
                 )
             };
 
+            // if there is previous entry, commit it as arbitrary
+            let mut commit_prev = || -> Result<bool, Err> {
+                if !entry.is_empty() {
+                    commit_arbitrary(
+                        entry.clone(),
+                        tokens,
+                        &debug_lexer,
+                        line,
+                        col_fn(column, entry.len()),
+                    )?;
+                    entry.clear();
+                    return Ok(true);
+                }
+                Ok(false)
+            };
+
             match c {
                 ' ' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
+                    commit_prev()?;
                 }
                 '"' => {
                     // start of a string literal, assert as literals
@@ -245,24 +250,14 @@ pub fn tokenize(
                             None => {
                                 return Err(Err {
                                     reason: ErrorReason::Syntax,
-                                    message: format!("missing trailing symbol '\"'"),
+                                    message: r#"missing trailing symbol '"'"#.to_string(),
                                 })
                             }
                         };
                     }
                 }
                 ':' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
+                    commit_prev()?;
 
                     // lookahead for another ':', mkaing up ::; module accessor
                     if let Some((_, c)) = buf_iter.peek() {
@@ -275,44 +270,21 @@ pub fn tokenize(
                     token_commit(Kind::Colon, tokens);
                 }
                 '_' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                        continue;
-                    }
-
-                    if let Some((_, c)) = buf_iter.peek() {
-                        if *c != ' ' || *c != ':' {
-                            entry.push(*c);
-                            buf_iter.next();
-                            last_line_column.0 = line;
-                            last_line_column.1 = column + 1;
-                            continue;
+                    if entry.is_empty() {
+                        if let Some((_, _c)) = buf_iter.peek() {
+                            if *_c == ' ' {
+                                token_commit(Kind::EmptyIdentifier, tokens);
+                                continue;
+                            }
                         }
                     }
 
-                    token_commit(Kind::EmptyIdentifier, tokens);
+                    entry.push(c);
+                    last_line_column.0 = line;
+                    last_line_column.1 = column + 1;
                 }
                 ',' => {
-                    // if there is previous entry, commit it as identifier
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::Separator, tokens);
                 }
                 '.' => {
@@ -337,95 +309,47 @@ pub fn tokenize(
                     last_line_column.1 = column + 1;
                 }
                 '!' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::Bang, tokens);
                 }
                 '?' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::QuestionMark, tokens);
                 }
                 '=' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::EqualOp, tokens);
                 }
                 '(' => {
+                    commit_prev()?;
                     token_commit(Kind::LeftParen, tokens);
                 }
                 ')' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::RightParen, tokens);
                 }
+                '{' => {
+                    commit_prev()?;
+                    token_commit(Kind::LeftBrace, tokens);
+                }
+                '}' => {
+                    commit_prev()?;
+                    token_commit(Kind::RightBrace, tokens);
+                }
+                '[' => {
+                    commit_prev()?;
+                    token_commit(Kind::LeftBracket, tokens);
+                }
+                ']' => {
+                    commit_prev()?;
+                    token_commit(Kind::RightBracket, tokens);
+                }
                 '~' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::NegationOp, tokens);
                 }
                 '-' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
+                    commit_prev()?;
 
                     if let Some((_, '>')) = buf_iter.peek() {
                         // advance iterator and commit as arrow
@@ -436,47 +360,15 @@ pub fn tokenize(
                     token_commit(Kind::SubtractOp, tokens);
                 }
                 '+' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::AddOp, tokens);
                 }
                 '*' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
+                    commit_prev()?;
                     token_commit(Kind::MultiplyOp, tokens);
                 }
                 '/' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     if let Some((_, '/')) = buf_iter.peek() {
                         buf_iter.next(); // advance iterator to next item
                         break;
@@ -486,78 +378,23 @@ pub fn tokenize(
                     token_commit(Kind::DivideOp, tokens);
                 }
                 '%' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::ModulusOp, tokens);
                 }
                 '&' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::LogicalAndOp, tokens);
                 }
                 '|' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::LogicalOrOp, tokens);
                 }
                 '>' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::GreaterThanOp, tokens);
                 }
                 '<' => {
-                    // if there is previous entry, commit it as arbitrary
-                    if !entry.is_empty() {
-                        commit_arbitrary(
-                            entry.clone(),
-                            tokens,
-                            &debug_lexer,
-                            line,
-                            col_fn(column, entry.len()),
-                        )?;
-                        entry.clear();
-                    }
-
+                    commit_prev()?;
                     token_commit(Kind::LessThanOp, tokens);
                 }
                 _ => {
@@ -657,7 +494,7 @@ fn commit_arbitrary(
             if !IDENTIFIER_REGEX.is_match(entry.as_str()) {
                 return Err(Err {
                     reason: ErrorReason::Syntax,
-                    message: format!("invalid identifier: {}", entry),
+                    message: format!("invalid identifier: ({})", entry),
                 });
             }
 
@@ -744,7 +581,7 @@ mod test {
             commit_arbitrary("123abc".to_string(), &mut tokens, &false, 1, 1).unwrap_err(),
             Err {
                 reason: ErrorReason::Syntax,
-                message: "invalid identifier: 123abc".to_string()
+                message: "invalid identifier: (123abc)".to_string()
             }
         );
     }
