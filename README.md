@@ -36,12 +36,19 @@ printf "fizzbuzz result for {} is {} itself" 7 (fizzbuzz 7)
 
 Fibonacci sequence:
 ```spk
-// Fibonacci sequence generator
 // naive implementation
 fib: n number -> number
     if n = 0 ? 0
     if n = 1 ? 1
     (fib n - 1) + (fib n - 2)
 
-printf "Naive solution (fib 20) is: {}" (fib 20)
+// memoized implementation
+fibMemo: n number -> number
+    memo is [0, 1] // The trailing separator is important. 
+    if memo[n] = () ? memo[n] is (fibMemo n - 1) + (fibMemo n - 2)
+    memo[n]
+
+
+printf "Naive solution: {}" (fib 25)
+printf "Dynamic solution: {}" (fibMemo 20)
 ```

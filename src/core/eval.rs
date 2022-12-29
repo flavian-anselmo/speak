@@ -25,6 +25,9 @@ pub mod r#type {
         /// Object type.
         Object(String),
 
+        /// Array type.
+        Array(Box<Type>),
+
         // Function type.
         Function,
 
@@ -40,6 +43,7 @@ pub mod r#type {
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
                 Type::Object(obj) => format!("object: {}", obj),
+                Type::Array(t) => format!("[]{}", t.string()),
                 Type::Function => "function".to_string(),
                 Type::Empty => "()".to_string(),
             }
@@ -69,6 +73,8 @@ pub mod value {
             name: String,
             body: HashMap<String, (Type, Value)>,
         },
+
+        Array(Type, Vec<Value>),
 
         /// This is the value of any variables referencing functions
         /// defined in a Speak program.
@@ -112,6 +118,7 @@ pub mod value {
                 Value::Bool(_) => Type::Bool,
                 Value::String(_) => Type::String,
                 Value::Object { name, .. } => Type::Object(name.clone()),
+                Value::Array(t, ..) => Type::Array(Box::new(t.clone())),
                 Value::Function { .. }
                 | Value::FunctionCallThunk { .. }
                 | Value::NativeFunction(..) => Type::Function,
@@ -134,7 +141,8 @@ pub mod value {
                 Value::Number(value) => value.to_string(),
                 Value::Bool(value) => value.to_string(),
                 Value::String(value) => value.to_string(),
-                Value::Object { name, .. } => format!("Object ({})", name),
+                Value::Object { name, body } => format!("Object ({name}): {:?}", body),
+                Value::Array(t, value) => format!("Array ([]{}): {:?}", t.string(), value),
                 Value::Function(func) => func.string(),
                 Value::NativeFunction(func) => format!("Native Function ({})", func.0),
                 Value::FunctionCallThunk { func, .. } => {
@@ -152,6 +160,25 @@ impl Node {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
             Node::BoolLiteral { value, .. } => Ok(Value::Bool(*value)),
+            Node::ArrayDeclaration { value, .. } => Ok(Value::Array(value.0.clone(), {
+                let mut values = Vec::with_capacity(value.1.len());
+                for node in &mut value.1 {
+                    let val = node.eval(stack, false)?;
+                    if val.value_type() != value.0 {
+                        return Err(Err {
+                            message: format!(
+                                "expected type ({}) but found ({}) at [{}]",
+                                value.0.string(),
+                                val.value_type().string(),
+                                node.position().string()
+                            ),
+                            reason: ErrorReason::Runtime,
+                        });
+                    }
+                    values.push(val);
+                }
+                values
+            })),
             Node::ObjectLiteral { name, value, .. } => {
                 let mut body = HashMap::new();
                 for (field_name, val) in value {
@@ -171,7 +198,7 @@ impl Node {
                     return Ok(val.clone());
                 }
                 Err(Err {
-                    message: format!("{} is not defined [{}]", value, position.string()),
+                    message: format!("{value} is not defined [{}]", position.string()),
                     reason: ErrorReason::System,
                 })
             }

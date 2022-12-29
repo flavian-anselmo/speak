@@ -1,5 +1,6 @@
 use super::{
     error::{Err, ErrorReason},
+    eval::r#type::Type,
     lexer::{Kind, Position, Tok},
     log::log_debug,
 };
@@ -18,6 +19,10 @@ pub enum Node {
     },
     BoolLiteral {
         value: bool,
+        position: Position,
+    },
+    ArrayDeclaration {
+        value: (Type, Vec<Node>),
         position: Position,
     },
     ObjectLiteral {
@@ -67,6 +72,10 @@ impl Node {
             Node::NumberLiteral { value, .. } => value.to_string(),
             Node::StringLiteral { value, .. } => value.clone(),
             Node::BoolLiteral { value, .. } => value.to_string(),
+            Node::ArrayDeclaration {
+                value: (of_type, _),
+                ..
+            } => format!("Array ([]{})", of_type.string()),
             Node::ObjectLiteral { name, value, .. } => {
                 format!(
                     "Object ({}) {{\n{}}}",
@@ -145,6 +154,7 @@ impl Node {
             Node::NumberLiteral { position, .. } => position,
             Node::StringLiteral { position, .. } => position,
             Node::BoolLiteral { position, .. } => position,
+            Node::ArrayDeclaration { position, .. } => position,
             Node::ObjectLiteral { position, .. } => position,
             Node::EmptyIdentifier { position } => position,
             Node::Identifier { position, .. } => position,
