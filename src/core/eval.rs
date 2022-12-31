@@ -131,7 +131,7 @@ pub mod value {
                 (Value::Number(a), Value::Number(b)) => a == &b,
                 (Value::Bool(a), Value::Bool(b)) => a == &b,
                 (Value::String(a), Value::String(b)) => a == &b,
-                // (Value::Empty, _) | (_, Value::Empty) => true,
+                (Value::Empty, Value::Empty) => true,
                 _ => false, // types here are incomparable
             }
         }
@@ -388,6 +388,7 @@ fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> 
         // assert that condition evaluates to boolean value
         let mut condition = condition.as_ref().clone();
         let val = condition.eval(stack, allow_thunk)?;
+
         let mut ret = |val| {
             if val {
                 return match on_true {
