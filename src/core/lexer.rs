@@ -507,7 +507,7 @@ fn commit_arbitrary(
                         str: None,
                         num: Some(
                             entry
-                                .replace("_", "")
+                                .replace('_', "")
                                 .parse::<f64>()
                                 .expect("number is already checked by regex and should not fail"),
                         ),

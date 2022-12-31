@@ -139,23 +139,17 @@ impl Node {
             } => {
                 let mut slicing_op = "".to_string();
                 if start_inclusive.is_some() {
-                    slicing_op += &format!(
-                        "{}",
-                        start_inclusive
-                            .as_ref()
-                            .expect("value is confirmed yo be present")
-                            .string()
-                    );
+                    slicing_op += &start_inclusive
+                        .as_ref()
+                        .expect("value is confirmed yo be present")
+                        .string();
                 }
                 slicing_op += ":";
                 if end_exclusive.is_some() {
-                    slicing_op += &format!(
-                        "{}",
-                        end_exclusive
-                            .as_ref()
-                            .expect("value is confirmed yo be present")
-                            .string()
-                    );
+                    slicing_op += &end_exclusive
+                        .as_ref()
+                        .expect("value is confirmed yo be present")
+                        .string();
                 }
 
                 format!("SlicingOp ({}[{slicing_op}])", operand.string())
