@@ -2,8 +2,8 @@
 name = "speak"
 version = "0.1.0"
 edition = "2021"
-description = """Speak is a programming language that is designed to have configurable keywords in an attempt to allow for \
-the use of multiple spoken languages as preferred by the programmer."""
+description = """Speak is an experimental programming language that aims to have configurable keywords. \
+This is to allow for the use of any written human language as preferred by the user."""
 
 [profile.release]
 # strip = true

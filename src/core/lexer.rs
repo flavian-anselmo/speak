@@ -8,7 +8,9 @@ use std::io::{BufRead, BufReader};
 
 lazy_static! {
     static ref IDENTIFIER_REGEX: Regex =
-        Regex::new(r"^[A-Za-z_]\w*$").expect("regex pattern is valid");
+        Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("regex identifier pattern is valid");
+    static ref NUMBER_REGEX: Regex =
+        Regex::new(r"^[+-]?\d+(_\d+)*(\.\d+)?$").expect("regex number pattern is valid");
 }
 
 // Kind is the sum type of all possible types
@@ -24,10 +26,12 @@ pub enum Kind {
     FalseLiteral,
     NumberLiteral,
     StringLiteral,
+    EmptyLiteral,
 
     NegationOp,
     AssignOp,
     AccessorOp,
+    EllipsisOp,
     AddOp,
     SubtractOp,
     MultiplyOp,
@@ -70,6 +74,7 @@ impl Kind {
             Kind::FalseLiteral => "false literal".to_string(),
             Kind::NumberLiteral => "number literal".to_string(),
             Kind::StringLiteral => "string literal".to_string(),
+            Kind::EmptyLiteral => "()".to_string(),
 
             Kind::TypeName(t) => t.string(),
             Kind::Separator => "','".to_string(),
@@ -81,6 +86,7 @@ impl Kind {
             Kind::NegationOp => "'~'".to_string(),
             Kind::AssignOp => "is".to_string(),
             Kind::AccessorOp => "'.'".to_string(),
+            Kind::EllipsisOp => "..".to_string(),
             Kind::AddOp => "'+'".to_string(),
             Kind::SubtractOp => "'-'".to_string(),
             Kind::MultiplyOp => "'*'".to_string(),
@@ -288,6 +294,16 @@ pub fn tokenize(
                     token_commit(Kind::Separator, tokens);
                 }
                 '.' => {
+                    // if next token is `.`, tokenize `..` Ellipsis
+                    if let Some((_, c)) = buf_iter.peek() {
+                        if *c == '.' {
+                            commit_prev()?;
+                            token_commit(Kind::EllipsisOp, tokens);
+                            buf_iter.next();
+                            continue;
+                        }
+                    }
+
                     // if there is a previous entry let's try resolve as [Identifier][AccessorOp][Identifier]
                     if !entry.is_empty() && IDENTIFIER_REGEX.is_match(&entry) {
                         commit_arbitrary(
@@ -322,6 +338,14 @@ pub fn tokenize(
                 }
                 '(' => {
                     commit_prev()?;
+                    if let Some((_, c)) = buf_iter.peek() {
+                        if *c == ')' {
+                            token_commit(Kind::EmptyLiteral, tokens);
+                            buf_iter.next();
+                            continue;
+                        }
+                    }
+
                     token_commit(Kind::LeftParen, tokens);
                 }
                 ')' => {
@@ -468,20 +492,25 @@ fn commit_arbitrary(
 
         "false" => commit_token(Kind::FalseLiteral, tokens),
 
-        "()" => commit_token(Kind::TypeName(Type::Empty), tokens),
-
         "if" => commit_token(Kind::If, tokens),
 
         "is" => commit_token(Kind::AssignOp, tokens),
 
+        ".." => commit_token(Kind::EllipsisOp, tokens),
+
         _ => {
             // check if entry string is numerical
-            if let Ok(num) = entry.parse::<f64>() {
+            if NUMBER_REGEX.is_match(entry.as_str()) {
                 commit(
                     Tok {
                         kind: Kind::NumberLiteral,
                         str: None,
-                        num: Some(num),
+                        num: Some(
+                            entry
+                                .replace('_', "")
+                                .parse::<f64>()
+                                .expect("number is already checked by regex and should not fail"),
+                        ),
                         position: Position { line, column },
                     },
                     tokens,
@@ -490,26 +519,26 @@ fn commit_arbitrary(
                 return Ok(());
             }
 
-            // identifiers should start with a number: a-z, A-Z, or _
-            if !IDENTIFIER_REGEX.is_match(entry.as_str()) {
-                return Err(Err {
+            // match as identifier
+            match IDENTIFIER_REGEX.is_match(entry.as_str()) {
+                true => {
+                    commit(
+                        Tok {
+                            kind: Kind::Identifier,
+                            str: Some(entry.to_string()),
+                            num: None,
+                            position: Position { line, column },
+                        },
+                        tokens,
+                        debug_lexer,
+                    );
+                    Ok(())
+                }
+                false => Err(Err {
                     reason: ErrorReason::Syntax,
                     message: format!("invalid identifier: ({})", entry),
-                });
+                }),
             }
-
-            commit(
-                Tok {
-                    kind: Kind::Identifier,
-                    str: Some(entry.to_string()),
-                    num: None,
-                    position: Position { line, column },
-                },
-                tokens,
-                debug_lexer,
-            );
-
-            Ok(())
         }
     }
 }

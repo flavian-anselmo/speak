@@ -1,5 +1,6 @@
 ### TODO
 - [x] Object types
 - [ ] Array types
-- [ ] Looping primitives
+- [ ] <s>Looping primitives<s>
 - [ ] Small stdlib (migrate from NativeFunctions)
+- [ ] Refactor and write a trial Swahili translation

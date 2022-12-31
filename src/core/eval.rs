@@ -4,7 +4,7 @@ use self::{
 };
 use super::{
     error::{Err, ErrorReason},
-    lexer::Kind,
+    lexer::{Kind, Position},
     parser::Node,
     runtime::{StackFrame, VTable},
 };
@@ -25,6 +25,9 @@ pub mod r#type {
         /// Object type.
         Object(String),
 
+        /// Array type.
+        Array(Box<Type>),
+
         // Function type.
         Function,
 
@@ -40,6 +43,7 @@ pub mod r#type {
                 Type::Bool => "bool".to_string(),
                 Type::String => "string".to_string(),
                 Type::Object(obj) => format!("object: {}", obj),
+                Type::Array(t) => format!("[]{}", t.string()),
                 Type::Function => "function".to_string(),
                 Type::Empty => "()".to_string(),
             }
@@ -69,6 +73,8 @@ pub mod value {
             name: String,
             body: HashMap<String, (Type, Value)>,
         },
+
+        Array(Type, Vec<Value>),
 
         /// This is the value of any variables referencing functions
         /// defined in a Speak program.
@@ -112,6 +118,7 @@ pub mod value {
                 Value::Bool(_) => Type::Bool,
                 Value::String(_) => Type::String,
                 Value::Object { name, .. } => Type::Object(name.clone()),
+                Value::Array(t, ..) => Type::Array(Box::new(t.clone())),
                 Value::Function { .. }
                 | Value::FunctionCallThunk { .. }
                 | Value::NativeFunction(..) => Type::Function,
@@ -124,7 +131,7 @@ pub mod value {
                 (Value::Number(a), Value::Number(b)) => a == &b,
                 (Value::Bool(a), Value::Bool(b)) => a == &b,
                 (Value::String(a), Value::String(b)) => a == &b,
-                (Value::Empty, _) | (_, Value::Empty) => true,
+                (Value::Empty, Value::Empty) => true,
                 _ => false, // types here are incomparable
             }
         }
@@ -134,7 +141,8 @@ pub mod value {
                 Value::Number(value) => value.to_string(),
                 Value::Bool(value) => value.to_string(),
                 Value::String(value) => value.to_string(),
-                Value::Object { name, .. } => format!("Object ({})", name),
+                Value::Object { name, body } => format!("Object ({name}): {:?}", body),
+                Value::Array(t, value) => format!("Array ([]{}): {:?}", t.string(), value),
                 Value::Function(func) => func.string(),
                 Value::NativeFunction(func) => format!("Native Function ({})", func.0),
                 Value::FunctionCallThunk { func, .. } => {
@@ -152,6 +160,31 @@ impl Node {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
             Node::BoolLiteral { value, .. } => Ok(Value::Bool(*value)),
+            Node::ArrayLiteral { value, .. } => {
+                let value_type = match value.is_empty() {
+                    true => Type::Empty,
+                    false => value[0].eval(stack, false)?.value_type(),
+                };
+                Ok(Value::Array(value_type.clone(), {
+                    let mut values = Vec::with_capacity(value.len());
+                    for node in value {
+                        let val = node.eval(stack, false)?;
+                        if val.value_type() != value_type {
+                            return Err(Err {
+                                message: format!(
+                                    "expected type ({}) but found ({}) at [{}]",
+                                    value_type.string(),
+                                    val.value_type().string(),
+                                    node.position().string()
+                                ),
+                                reason: ErrorReason::Runtime,
+                            });
+                        }
+                        values.push(val);
+                    }
+                    values
+                }))
+            }
             Node::ObjectLiteral { name, value, .. } => {
                 let mut body = HashMap::new();
                 for (field_name, val) in value {
@@ -165,13 +198,13 @@ impl Node {
                     body,
                 })
             }
-            Node::EmptyIdentifier { .. } => Ok(Value::Empty),
+            Node::EmptyLiteral(..) | Node::EmptyIdentifier { .. } => Ok(Value::Empty),
             Node::Identifier { value, position } => {
                 if let Some(val) = stack.get(value) {
                     return Ok(val.clone());
                 }
                 Err(Err {
-                    message: format!("{} is not defined [{}]", value, position.string()),
+                    message: format!("{value} is not defined [{}]", position.string()),
                     reason: ErrorReason::System,
                 })
             }
@@ -242,6 +275,66 @@ impl Node {
                 }
             }
             Node::BinaryExpression { .. } => eval_binary_expr_node(self, stack, &allow_thunk),
+            Node::IndexingOp { operand, index, .. } => match operand.eval(stack, false)? {
+                Value::Array(_, vals) => {
+                    let idx = to_usize(&(to_number(index, stack)?), index.position())?;
+                    match idx >= vals.len() {
+                        true => Ok(Value::Empty), // index out of bounds return ()
+                        false => Ok(vals[idx].clone()),
+                    }
+                }
+                _ => Err(Err {
+                    message: format!(
+                        "could not parse {} as array value, at [{}]",
+                        operand.string(),
+                        operand.position().string()
+                    ),
+                    reason: ErrorReason::Runtime,
+                }),
+            },
+            Node::SlicingOp {
+                operand,
+                start_inclusive,
+                end_exclusive,
+                ..
+            } => match operand.eval(stack, false)? {
+                Value::Array(t, mut vals) => match (start_inclusive, end_exclusive) {
+                    (Some(x), None) => {
+                        // array[start..]
+                        Ok(Value::Array(
+                            t,
+                            vals.split_off(to_usize(&(to_number(x, stack)?), x.position())?),
+                        ))
+                    }
+                    (None, Some(x)) => {
+                        // array[..end]
+                        _ = vals.split_off(to_usize(&(to_number(x, stack)?), x.position())?);
+                        Ok(Value::Array(t, vals))
+                    }
+                    (Some(x), Some(y)) => {
+                        // array[start:end]
+                        _ = vals.split_off(to_usize(&(to_number(y, stack)?), y.position())?);
+                        Ok(Value::Array(
+                            t,
+                            vals.split_off(to_usize(&(to_number(x, stack)?), x.position())?),
+                        ))
+                    }
+                    (None, None) => Err(Err {
+                        message: "slicing operation does not provied a start or an end index"
+                            .to_string(),
+                        reason: ErrorReason::Assert,
+                    }),
+                },
+                _ => Err(Err {
+                    message: format!(
+                        "could not parse ({}) as array value, at [{}]",
+                        operand.string(),
+                        operand.position().string()
+                    ),
+                    reason: ErrorReason::Runtime,
+                }),
+            },
+
             Node::FunctionCall {
                 function,
                 arguments,
@@ -295,6 +388,7 @@ fn eval_if_expr_node(node: &Node, stack: &mut StackFrame, allow_thunk: bool) -> 
         // assert that condition evaluates to boolean value
         let mut condition = condition.as_ref().clone();
         let val = condition.eval(stack, allow_thunk)?;
+
         let mut ret = |val| {
             if val {
                 return match on_true {
@@ -368,6 +462,40 @@ fn eval_binary_expr_node(
                         let right_value = r.eval(stack, false)?;
                         stack.set(value.clone(), right_value.clone());
                         return Ok(right_value);
+                    }
+
+                    Node::IndexingOp { operand, index, .. } => {
+                        let mut operand = operand.as_ref().clone();
+                        match &mut operand.eval(stack, false)? {
+                            Value::Array(_, vals) => {
+                                let mut index = index.as_ref().clone();
+                                let idx =
+                                    to_usize(&(to_number(&mut index, stack)?), index.position())?;
+
+                                // if index out of bounds, extend vec
+                                if idx >= vals.len() {
+                                    vals.resize(idx + 1, Value::Empty);
+                                }
+
+                                // right operand node must evaluate to a value
+                                let mut r = right_operand.as_ref().clone();
+                                let right_value = r.eval(stack, false)?;
+
+                                vals[idx] = right_value.clone();
+
+                                return Ok(right_value);
+                            }
+                            _ => {
+                                return Err(Err {
+                                    message: format!(
+                                        "could not parse {} as array value, at [{}]",
+                                        operand.string(),
+                                        operand.position().string()
+                                    ),
+                                    reason: ErrorReason::Runtime,
+                                })
+                            }
+                        }
                     }
 
                     Node::BinaryExpression {
@@ -961,6 +1089,34 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
 
 fn is_intable(num: &f64) -> bool {
     *num == num.trunc()
+}
+
+#[inline]
+fn to_usize(num: &f64, pos: &Position) -> Result<usize, Err> {
+    match is_intable(num) {
+        true => Ok(*num as usize),
+        false => Err(Err {
+            message: format!(
+                "value ({num}) cannot be used as index, at[{}]",
+                pos.string(),
+            ),
+            reason: ErrorReason::Runtime,
+        }),
+    }
+}
+
+fn to_number(node: &mut Node, stack: &mut StackFrame) -> Result<f64, Err> {
+    match node.eval(stack, false)? {
+        Value::Number(idx) => Ok(idx),
+        _ => Err(Err {
+            reason: ErrorReason::Runtime,
+            message: format!(
+                "expected number, provided node is ({}) at [{}]",
+                node.string(),
+                node.position().string(),
+            ),
+        }),
+    }
 }
 
 #[cfg(test)]
