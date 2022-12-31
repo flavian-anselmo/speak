@@ -5,7 +5,6 @@ use self::{
 use super::{
     error::{Err, ErrorReason},
     lexer::{Kind, Position},
-    log::log_interactive,
     parser::Node,
     runtime::{StackFrame, VTable},
 };
@@ -453,17 +452,8 @@ fn eval_binary_expr_node(
             ))
         };
 
-        if operator == &Kind::AssignOp {
-            log_interactive(&format!(
-                "HERE operator is {}, left_operand is {:?}\n",
-                operator.string(),
-                left_operand
-            ));
-        }
-
         match operator {
             Kind::AssignOp => {
-                // log_interactive(format!("HERE {:?}", left_operand));
                 match left_operand.as_ref() {
                     Node::Identifier { value, .. } => {
                         // right operand node must evaluate to a value
@@ -474,7 +464,6 @@ fn eval_binary_expr_node(
                     }
 
                     Node::IndexingOp { operand, index, .. } => {
-                        log_interactive("HERE !!!!!\n");
                         let mut operand = operand.as_ref().clone();
                         match &mut operand.eval(stack, false)? {
                             Value::Array(_, vals) => {
@@ -486,8 +475,6 @@ fn eval_binary_expr_node(
                                 if idx >= vals.len() {
                                     vals.resize(idx + 1, Value::Empty);
                                 }
-
-                                log_interactive("HERE !");
 
                                 // right operand node must evaluate to a value
                                 let mut r = right_operand.as_ref().clone();
