@@ -21,8 +21,8 @@ pub enum Node {
         value: bool,
         position: Position,
     },
-    ArrayDeclaration {
-        value: (Type, Vec<Node>),
+    ArrayLiteral {
+        value: Vec<Node>,
         position: Position,
     },
     ObjectLiteral {
@@ -30,6 +30,7 @@ pub enum Node {
         value: Vec<(String, Node)>,
         position: Position,
     },
+    EmptyLiteral(Position),
     EmptyIdentifier {
         position: Position,
     },
@@ -46,6 +47,17 @@ pub enum Node {
         operator: Kind,
         left_operand: Box<Node>,
         right_operand: Box<Node>,
+        position: Position,
+    },
+    IndexingOp {
+        operand: Box<Node>,
+        index: Box<Node>,
+        position: Position,
+    },
+    SlicingOp {
+        operand: Box<Node>,
+        start_inclusive: Option<Box<Node>>,
+        end_exclusive: Option<Box<Node>>,
         position: Position,
     },
     FunctionCall {
@@ -72,23 +84,34 @@ impl Node {
             Node::NumberLiteral { value, .. } => value.to_string(),
             Node::StringLiteral { value, .. } => value.clone(),
             Node::BoolLiteral { value, .. } => value.to_string(),
-            Node::ArrayDeclaration {
-                value: (of_type, _),
-                ..
-            } => format!("Array ([]{})", of_type.string()),
+            Node::ArrayLiteral { value, .. } => format!(
+                "Array ([{}])",
+                if value.is_empty() {
+                    Type::Empty.string()
+                } else {
+                    value.iter().fold(String::new(), |acc, n| {
+                        if acc.is_empty() {
+                            n.string()
+                        } else {
+                            format!("{}, {}", acc, n.string())
+                        }
+                    })
+                }
+            ),
             Node::ObjectLiteral { name, value, .. } => {
                 format!(
                     "Object ({}) {{\n{}}}",
                     name,
-                    value.iter().fold(String::new(), |acc, (field_name, _)| {
-                        if acc.is_empty() {
+                    value
+                        .iter()
+                        .fold(String::new(), |acc, (field_name, _)| if acc.is_empty() {
                             field_name.clone()
                         } else {
                             format!("\n{}", field_name)
-                        }
-                    })
+                        }),
                 )
             }
+            Node::EmptyLiteral(..) => "()".to_string(),
             Node::EmptyIdentifier { .. } => "".to_string(),
             Node::Identifier { value, .. } => value.clone(),
             Node::UnaryExpression {
@@ -105,6 +128,38 @@ impl Node {
                 left_operand.string(),
                 right_operand.string()
             ),
+            Node::IndexingOp { operand, index, .. } => {
+                format!("IndexingOp ({}[{}])", operand.string(), index.string())
+            }
+            Node::SlicingOp {
+                operand,
+                start_inclusive,
+                end_exclusive,
+                ..
+            } => {
+                let mut slicing_op = "".to_string();
+                if start_inclusive.is_some() {
+                    slicing_op += &format!(
+                        "{}",
+                        start_inclusive
+                            .as_ref()
+                            .expect("value is confirmed yo be present")
+                            .string()
+                    );
+                }
+                slicing_op += ":";
+                if end_exclusive.is_some() {
+                    slicing_op += &format!(
+                        "{}",
+                        end_exclusive
+                            .as_ref()
+                            .expect("value is confirmed yo be present")
+                            .string()
+                    );
+                }
+
+                format!("SlicingOp ({}[{slicing_op}])", operand.string())
+            }
             Node::FunctionCall {
                 function,
                 arguments,
@@ -122,13 +177,14 @@ impl Node {
             } => format!(
                 "Function ({}): {} -> {}",
                 signature.0.position().string(),
-                signature.1.iter().fold(String::new(), |acc, (_, l)| {
-                    if acc.is_empty() {
+                signature
+                    .1
+                    .iter()
+                    .fold(String::new(), |acc, (_, l)| if acc.is_empty() {
                         l.string()
                     } else {
                         format!("{}, {}", acc, l.string())
-                    }
-                }),
+                    }),
                 signature.2.string()
             ),
             Node::IfExpr {
@@ -154,12 +210,15 @@ impl Node {
             Node::NumberLiteral { position, .. } => position,
             Node::StringLiteral { position, .. } => position,
             Node::BoolLiteral { position, .. } => position,
-            Node::ArrayDeclaration { position, .. } => position,
+            Node::ArrayLiteral { position, .. } => position,
             Node::ObjectLiteral { position, .. } => position,
+            Node::EmptyLiteral(pos) => pos,
             Node::EmptyIdentifier { position } => position,
             Node::Identifier { position, .. } => position,
             Node::UnaryExpression { position, .. } => position,
             Node::BinaryExpression { position, .. } => position,
+            Node::IndexingOp { position, .. } => position,
+            Node::SlicingOp { position, .. } => position,
             Node::FunctionCall { position, .. } => position,
             Node::FunctionLiteral { position, .. } => position,
             Node::IfExpr { position, .. } => position,
@@ -233,7 +292,13 @@ fn parse_expression(
     idx += 1;
 
     match &next_tok.kind {
-        Kind::RightParen | Kind::QuestionMark | Kind::Bang => Ok((atom, idx - 1)), // consumed by caller
+        Kind::RightParen
+        | Kind::QuestionMark
+        | Kind::Bang
+        | Kind::RightBracket
+        | Kind::EllipsisOp => {
+            Ok((atom, idx - 1)) // consumed by caller
+        }
 
         Kind::Separator => Ok((atom, idx)), // consumed
 
@@ -350,6 +415,8 @@ fn parse_atom(
 
         Kind::LeftParen => return parse_capsulated_expr(tokens, idx, col_bound),
 
+        Kind::LeftBracket => return parse_array_literal(tokens, col_bound),
+
         Kind::NegationOp => {
             let (operand, consumed) = parse_atom(&tokens[idx..], false, col_bound)?;
 
@@ -420,10 +487,16 @@ fn parse_atom(
                         (atom, idx) = parse_object_literal(&tokens[idx + 1..], atom)?;
                         idx += 2; // +1 for Kind::LeftBrace, +1 for previous overwritten value of idx
                     }
+                    Kind::LeftBracket => {
+                        // this is the start of an array operation
+                        (atom, idx) = parse_array_op(atom, tokens, col_bound)?;
+                    }
                     _ => {}
                 }
             }
         }
+
+        Kind::EmptyLiteral => return Ok((Node::EmptyLiteral(tok.position.clone()), idx)),
 
         Kind::EmptyIdentifier => {
             return Ok((
@@ -486,6 +559,135 @@ fn parse_capsulated_expr(
             ),
             reason: ErrorReason::Syntax,
         }),
+    }
+}
+
+fn parse_array_literal(tokens: &[Tok], col_bound: usize) -> Result<(Node, usize), Err> {
+    let mut idx = 1;
+    let mut list_items = Vec::new();
+    while tokens[idx].kind != Kind::RightBracket {
+        guard_unexpected_input_end(tokens, idx)?;
+
+        let (list_item, consumed) = parse_expression(&tokens[idx..], false, col_bound)?;
+        list_items.push(list_item);
+        idx += consumed;
+
+        // separator
+        if tokens[idx].kind == Kind::Separator {
+            idx += 1; // +1 for Kind::Separator consumed
+        }
+    }
+
+    Ok((
+        Node::ArrayLiteral {
+            value: list_items,
+            position: tokens[0].position.clone(),
+        },
+        idx + 1, // +1 for Kind::RightBracket consumed
+    ))
+}
+
+fn parse_array_op(
+    identifier: Node,
+    tokens: &[Tok],
+    col_bound: usize,
+) -> Result<(Node, usize), Err> {
+    let mut idx = 2; // +1 for Identifier, +1 for Kind::LeftBracket
+    guard_unexpected_input_end(tokens, idx)?;
+
+    let assert_index = |node: &Node| {
+        if !matches!(node, &Node::NumberLiteral { .. } | &Node::Identifier { .. }) {
+            return Err(Err {
+                reason: ErrorReason::Syntax,
+                message: format!(
+                    "expected number literal or identifier for indexing, found ({}) at [{}]",
+                    node.string(),
+                    node.position().string()
+                ),
+            });
+        }
+        Ok(())
+    };
+
+    // array[start..end]
+    let slicing_op = |mut idx: usize, start_inclusive| {
+        let end_exclusive = {
+            match tokens[idx].kind {
+                Kind::RightBracket => None::<Box<Node>>,
+                _ => {
+                    let (end, consumed) = parse_expression(&tokens[idx..], false, col_bound)?;
+                    assert_index(&end)?;
+                    idx += consumed;
+                    Some(Box::new(end))
+                }
+            }
+        };
+
+        guard_unexpected_input_end(tokens, idx)?;
+        match tokens[idx].kind {
+            Kind::RightBracket => Ok((
+                Node::SlicingOp {
+                    operand: Box::new(identifier.clone()),
+                    start_inclusive,
+                    end_exclusive,
+                    position: identifier.position().clone(),
+                },
+                idx + 1, // +1 for Kind::RightBracket consumed
+            )),
+            _ => Err(Err {
+                message: format!(
+                    "expected right bracket, found ({}) at [{}]",
+                    tokens[idx].string(),
+                    tokens[idx].position.string(),
+                ),
+                reason: ErrorReason::Syntax,
+            }),
+        }
+    };
+
+    match tokens[idx].kind {
+        // array[..end]
+        Kind::EllipsisOp => {
+            idx += 1; // +1 for Kind::Ellipsis
+            guard_unexpected_input_end(tokens, idx)?;
+            slicing_op(idx, None)
+        }
+
+        _ => {
+            let (start_inclusive, consumed) = parse_expression(&tokens[idx..], false, col_bound)?;
+            assert_index(&start_inclusive)?;
+            idx += consumed;
+
+            match tokens[idx].kind {
+                // array[start..]
+                // array[start..end]
+                Kind::EllipsisOp => {
+                    idx += 1; // +1 for Kind::Ellipsis
+                    guard_unexpected_input_end(tokens, idx)?;
+                    slicing_op(idx, Some(Box::new(start_inclusive)))
+                }
+
+                // array[idx]
+                Kind::RightBracket => {
+                    Ok((
+                        Node::IndexingOp {
+                            operand: Box::new(identifier.clone()),
+                            index: Box::new(start_inclusive),
+                            position: identifier.position().clone(),
+                        },
+                        idx + 1, // +1 for Kind::RightBracket consumed
+                    ))
+                }
+                _ => Err(Err {
+                    reason: ErrorReason::Syntax,
+                    message: format!(
+                        "expected EllipsisOp or RightBracket, found ({}) at [{}]",
+                        tokens[idx].string(),
+                        tokens[idx].position.string()
+                    ),
+                }),
+            }
+        }
     }
 }
 

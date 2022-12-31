@@ -8,16 +8,16 @@ sequence: start number -> []number
     (sub: n number, acc []number -> []number
         if n = 1 ? acc
         sub (next n) (len acc))
-    sub start [start:]
+    sub start, [start]
 
 longestSequenceUnder: max number -> []number
     (sub: n, prevMax number, prevSeq []number -> []number
         if n = max ? prevSeq
-        currSeq is sequence n
-		currMax is len(currSeq)
-		if currMax > prevMax ? sub (n + 1) currMax currSeq
+        currSeq is (sequence n)
+		currMax is (len currSeq)
+		if currMax > prevMax ? sub (n + 1), currMax, currSeq
 		sub (n + 1) prevMax prevSeq)
-    sub 1 0 []
+    sub 1, 0, []
 
 
 // run a search for longest collatz sequence under max

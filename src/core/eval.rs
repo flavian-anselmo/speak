@@ -4,7 +4,8 @@ use self::{
 };
 use super::{
     error::{Err, ErrorReason},
-    lexer::Kind,
+    lexer::{Kind, Position},
+    log::log_interactive,
     parser::Node,
     runtime::{StackFrame, VTable},
 };
@@ -131,7 +132,7 @@ pub mod value {
                 (Value::Number(a), Value::Number(b)) => a == &b,
                 (Value::Bool(a), Value::Bool(b)) => a == &b,
                 (Value::String(a), Value::String(b)) => a == &b,
-                (Value::Empty, _) | (_, Value::Empty) => true,
+                // (Value::Empty, _) | (_, Value::Empty) => true,
                 _ => false, // types here are incomparable
             }
         }
@@ -160,25 +161,31 @@ impl Node {
             Node::NumberLiteral { value, .. } => Ok(Value::Number(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
             Node::BoolLiteral { value, .. } => Ok(Value::Bool(*value)),
-            Node::ArrayDeclaration { value, .. } => Ok(Value::Array(value.0.clone(), {
-                let mut values = Vec::with_capacity(value.1.len());
-                for node in &mut value.1 {
-                    let val = node.eval(stack, false)?;
-                    if val.value_type() != value.0 {
-                        return Err(Err {
-                            message: format!(
-                                "expected type ({}) but found ({}) at [{}]",
-                                value.0.string(),
-                                val.value_type().string(),
-                                node.position().string()
-                            ),
-                            reason: ErrorReason::Runtime,
-                        });
+            Node::ArrayLiteral { value, .. } => {
+                let value_type = match value.is_empty() {
+                    true => Type::Empty,
+                    false => value[0].eval(stack, false)?.value_type(),
+                };
+                Ok(Value::Array(value_type.clone(), {
+                    let mut values = Vec::with_capacity(value.len());
+                    for node in value {
+                        let val = node.eval(stack, false)?;
+                        if val.value_type() != value_type {
+                            return Err(Err {
+                                message: format!(
+                                    "expected type ({}) but found ({}) at [{}]",
+                                    value_type.string(),
+                                    val.value_type().string(),
+                                    node.position().string()
+                                ),
+                                reason: ErrorReason::Runtime,
+                            });
+                        }
+                        values.push(val);
                     }
-                    values.push(val);
-                }
-                values
-            })),
+                    values
+                }))
+            }
             Node::ObjectLiteral { name, value, .. } => {
                 let mut body = HashMap::new();
                 for (field_name, val) in value {
@@ -192,7 +199,7 @@ impl Node {
                     body,
                 })
             }
-            Node::EmptyIdentifier { .. } => Ok(Value::Empty),
+            Node::EmptyLiteral(..) | Node::EmptyIdentifier { .. } => Ok(Value::Empty),
             Node::Identifier { value, position } => {
                 if let Some(val) = stack.get(value) {
                     return Ok(val.clone());
@@ -269,6 +276,66 @@ impl Node {
                 }
             }
             Node::BinaryExpression { .. } => eval_binary_expr_node(self, stack, &allow_thunk),
+            Node::IndexingOp { operand, index, .. } => match operand.eval(stack, false)? {
+                Value::Array(_, vals) => {
+                    let idx = to_usize(&(to_number(index, stack)?), index.position())?;
+                    match idx >= vals.len() {
+                        true => Ok(Value::Empty), // index out of bounds return ()
+                        false => Ok(vals[idx].clone()),
+                    }
+                }
+                _ => Err(Err {
+                    message: format!(
+                        "could not parse {} as array value, at [{}]",
+                        operand.string(),
+                        operand.position().string()
+                    ),
+                    reason: ErrorReason::Runtime,
+                }),
+            },
+            Node::SlicingOp {
+                operand,
+                start_inclusive,
+                end_exclusive,
+                ..
+            } => match operand.eval(stack, false)? {
+                Value::Array(t, mut vals) => match (start_inclusive, end_exclusive) {
+                    (Some(x), None) => {
+                        // array[start..]
+                        Ok(Value::Array(
+                            t,
+                            vals.split_off(to_usize(&(to_number(x, stack)?), x.position())?),
+                        ))
+                    }
+                    (None, Some(x)) => {
+                        // array[..end]
+                        _ = vals.split_off(to_usize(&(to_number(x, stack)?), x.position())?);
+                        Ok(Value::Array(t, vals))
+                    }
+                    (Some(x), Some(y)) => {
+                        // array[start:end]
+                        _ = vals.split_off(to_usize(&(to_number(y, stack)?), y.position())?);
+                        Ok(Value::Array(
+                            t,
+                            vals.split_off(to_usize(&(to_number(x, stack)?), x.position())?),
+                        ))
+                    }
+                    (None, None) => Err(Err {
+                        message: "slicing operation does not provied a start or an end index"
+                            .to_string(),
+                        reason: ErrorReason::Assert,
+                    }),
+                },
+                _ => Err(Err {
+                    message: format!(
+                        "could not parse ({}) as array value, at [{}]",
+                        operand.string(),
+                        operand.position().string()
+                    ),
+                    reason: ErrorReason::Runtime,
+                }),
+            },
+
             Node::FunctionCall {
                 function,
                 arguments,
@@ -386,8 +453,17 @@ fn eval_binary_expr_node(
             ))
         };
 
+        if operator == &Kind::AssignOp {
+            log_interactive(&format!(
+                "HERE operator is {}, left_operand is {:?}\n",
+                operator.string(),
+                left_operand
+            ));
+        }
+
         match operator {
             Kind::AssignOp => {
+                // log_interactive(format!("HERE {:?}", left_operand));
                 match left_operand.as_ref() {
                     Node::Identifier { value, .. } => {
                         // right operand node must evaluate to a value
@@ -395,6 +471,43 @@ fn eval_binary_expr_node(
                         let right_value = r.eval(stack, false)?;
                         stack.set(value.clone(), right_value.clone());
                         return Ok(right_value);
+                    }
+
+                    Node::IndexingOp { operand, index, .. } => {
+                        log_interactive("HERE !!!!!\n");
+                        let mut operand = operand.as_ref().clone();
+                        match &mut operand.eval(stack, false)? {
+                            Value::Array(_, vals) => {
+                                let mut index = index.as_ref().clone();
+                                let idx =
+                                    to_usize(&(to_number(&mut index, stack)?), index.position())?;
+
+                                // if index out of bounds, extend vec
+                                if idx >= vals.len() {
+                                    vals.resize(idx + 1, Value::Empty);
+                                }
+
+                                log_interactive("HERE !");
+
+                                // right operand node must evaluate to a value
+                                let mut r = right_operand.as_ref().clone();
+                                let right_value = r.eval(stack, false)?;
+
+                                vals[idx] = right_value.clone();
+
+                                return Ok(right_value);
+                            }
+                            _ => {
+                                return Err(Err {
+                                    message: format!(
+                                        "could not parse {} as array value, at [{}]",
+                                        operand.string(),
+                                        operand.position().string()
+                                    ),
+                                    reason: ErrorReason::Runtime,
+                                })
+                            }
+                        }
                     }
 
                     Node::BinaryExpression {
@@ -988,6 +1101,34 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
 
 fn is_intable(num: &f64) -> bool {
     *num == num.trunc()
+}
+
+#[inline]
+fn to_usize(num: &f64, pos: &Position) -> Result<usize, Err> {
+    match is_intable(num) {
+        true => Ok(*num as usize),
+        false => Err(Err {
+            message: format!(
+                "value ({num}) cannot be used as index, at[{}]",
+                pos.string(),
+            ),
+            reason: ErrorReason::Runtime,
+        }),
+    }
+}
+
+fn to_number(node: &mut Node, stack: &mut StackFrame) -> Result<f64, Err> {
+    match node.eval(stack, false)? {
+        Value::Number(idx) => Ok(idx),
+        _ => Err(Err {
+            reason: ErrorReason::Runtime,
+            message: format!(
+                "expected number, provided node is ({}) at [{}]",
+                node.string(),
+                node.position().string(),
+            ),
+        }),
+    }
 }
 
 #[cfg(test)]
