@@ -671,7 +671,7 @@ mod test {
             commit_arbitrary("123abc".to_string(), &mut tokens, &false, 1, 1).unwrap_err(),
             Err {
                 reason: ErrorReason::Syntax,
-                message: "invalid identifier: (123abc)".to_string()
+                message: "invalid identifier: (\"123abc\")".to_string()
             }
         );
     }
