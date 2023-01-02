@@ -511,7 +511,11 @@ fn commit_arbitrary(
 
         _ => {
             // check if entry string is numerical
+<<<<<<< HEAD
             if NUMBER_REGEX.is_match(&entry) {
+=======
+            if NUMBER_REGEX.is_match(entry.as_str()) {
+>>>>>>> 0d8b5d3bdc378dcfa65053dcb56bfdd30df398c6
                 commit(
                     Tok {
                         kind: Kind::NumberLiteral,
@@ -530,6 +534,7 @@ fn commit_arbitrary(
                 return Ok(());
             }
 
+<<<<<<< HEAD
             // match as an array type; FIXME
             // let array_type_captures = ARRAY_TYPE_REGEX.captures(&entry);
             if ARRAY_TYPE_REGEX.captures(&entry).is_some() {
@@ -600,6 +605,28 @@ fn commit_arbitrary(
                     message: format!("invalid identifier: (\"{}\")", entry),
                 }),
             }
+=======
+            // match as identifier
+            match IDENTIFIER_REGEX.is_match(entry.as_str()) {
+                true => {
+                    commit(
+                        Tok {
+                            kind: Kind::Identifier,
+                            str: Some(entry.to_string()),
+                            num: None,
+                            position: Position { line, column },
+                        },
+                        tokens,
+                        debug_lexer,
+                    );
+                    Ok(())
+                }
+                false => Err(Err {
+                    reason: ErrorReason::Syntax,
+                    message: format!("invalid identifier: ({})", entry),
+                }),
+            }
+>>>>>>> 0d8b5d3bdc378dcfa65053dcb56bfdd30df398c6
         }
     }
 }
