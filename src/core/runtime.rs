@@ -353,20 +353,6 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                 })),
             );
 
-            // frame.set(
-            //     "append".to_string(),
-            //     Value::NativeFunction(NativeFunction("append".to_string(), |stack, inputs| {
-            //         if inputs.len() != 2 {
-            //             return Err(Err {
-            //                 reason: ErrorReason::Runtime,
-            //                 message: "append takes exactly two list values".to_string(),
-            //             });
-            //         }
-
-            //         unimplemented!()
-            //     })),
-            // );
-
             frame.set(
                 "mod".to_string(),
                 Value::NativeFunction(NativeFunction(
