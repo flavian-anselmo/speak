@@ -503,7 +503,11 @@ fn parse_atom(
 
         _ => {
             return Err(Err {
-                message: format!("unexpected start of atom, found {}", tok.kind.string(),),
+                message: format!(
+                    "unexpected start of atom, found ({}) at [{}]",
+                    tok.kind.string(),
+                    tok.position.string()
+                ),
                 reason: ErrorReason::Syntax,
             })
         }

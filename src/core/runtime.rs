@@ -336,19 +336,36 @@ pub fn load_builtins(ctx: &mut Context) -> Result<(), Err> {
                 Value::NativeFunction(NativeFunction("len".to_string(), |_, inputs| {
                     if inputs.len() != 1 {
                         return Err(Err {
-                            reason: super::error::ErrorReason::Runtime,
+                            reason: ErrorReason::Runtime,
                             message: "len() takes exactly one argument".to_string(),
                         });
                     }
 
                     match &inputs[0] {
-                        Value::String(_str) => Ok(Value::Number(_str.len() as f64)),
-
-                        // todo: check if input is a string or list, fail for number
-                        _ => Ok(Value::Number(inputs.len() as f64)),
+                        Value::String(val) => Ok(Value::Number(val.len() as f64)),
+                        Value::Array(_, val) => Ok(Value::Number(val.len() as f64)),
+                        _ => Err(Err {
+                            message: "len cal only be called for array and string types"
+                                .to_string(),
+                            reason: ErrorReason::Runtime,
+                        }),
                     }
                 })),
             );
+
+            // frame.set(
+            //     "append".to_string(),
+            //     Value::NativeFunction(NativeFunction("append".to_string(), |stack, inputs| {
+            //         if inputs.len() != 2 {
+            //             return Err(Err {
+            //                 reason: ErrorReason::Runtime,
+            //                 message: "append takes exactly two list values".to_string(),
+            //             });
+            //         }
+
+            //         unimplemented!()
+            //     })),
+            // );
 
             frame.set(
                 "mod".to_string(),

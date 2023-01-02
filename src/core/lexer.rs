@@ -11,6 +11,8 @@ lazy_static! {
         Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("regex identifier pattern is valid");
     static ref NUMBER_REGEX: Regex =
         Regex::new(r"^[+-]?\d+(_\d+)*(\.\d+)?$").expect("regex number pattern is valid");
+    static ref ARRAY_TYPE_REGEX: Regex =
+        Regex::new(r"^(\[\])+([a-z]+)$").expect("regex array pattern is valid");
 }
 
 // Kind is the sum type of all possible types
@@ -221,7 +223,7 @@ pub fn tokenize(
             };
 
             match c {
-                ' ' => {
+                ' ' | '\t' | '\n' => {
                     commit_prev()?;
                 }
                 '"' => {
@@ -362,6 +364,15 @@ pub fn tokenize(
                 }
                 '[' => {
                     commit_prev()?;
+                    if let Some((_, k)) = buf_iter.peek() {
+                        if *k == ']' {
+                            entry.push(c);
+                            entry.push(*k);
+                            buf_iter.next();
+                            continue;
+                        }
+                    }
+
                     token_commit(Kind::LeftBracket, tokens);
                 }
                 ']' => {
@@ -500,7 +511,7 @@ fn commit_arbitrary(
 
         _ => {
             // check if entry string is numerical
-            if NUMBER_REGEX.is_match(entry.as_str()) {
+            if NUMBER_REGEX.is_match(&entry) {
                 commit(
                     Tok {
                         kind: Kind::NumberLiteral,
@@ -519,8 +530,58 @@ fn commit_arbitrary(
                 return Ok(());
             }
 
+            // match as an array type; FIXME
+            // let array_type_captures = ARRAY_TYPE_REGEX.captures(&entry);
+            if ARRAY_TYPE_REGEX.captures(&entry).is_some() {
+                let mut array_type = Type::Array(Box::new(Type::to_type(&entry.replace("[]", ""))));
+                let mut entry = entry;
+
+                while let Some(i) = entry.find("[]") {
+                    entry = entry
+                        .strip_prefix("[]")
+                        .expect("value is present")
+                        .to_string();
+
+                    if i == 0 {
+                        continue;
+                    }
+                    array_type = Type::Array(Box::new(array_type))
+                }
+
+                commit(
+                    Tok {
+                        kind: Kind::TypeName(array_type),
+                        str: None,
+                        num: None,
+                        position: Position { line, column },
+                    },
+                    tokens,
+                    debug_lexer,
+                );
+                return Ok(());
+            }
+
+            // empty array literal, []
+            if entry.eq("[]") {
+                commit_token(Kind::LeftBracket, tokens)?;
+                commit(
+                    Tok {
+                        kind: Kind::RightBracket,
+                        str: None,
+                        num: None,
+                        position: Position {
+                            line,
+                            column: column + 1,
+                        },
+                    },
+                    tokens,
+                    debug_lexer,
+                );
+                return Ok(());
+            }
+
             // match as identifier
-            match IDENTIFIER_REGEX.is_match(entry.as_str()) {
+            match IDENTIFIER_REGEX.is_match(&entry) {
                 true => {
                     commit(
                         Tok {
@@ -536,7 +597,7 @@ fn commit_arbitrary(
                 }
                 false => Err(Err {
                     reason: ErrorReason::Syntax,
-                    message: format!("invalid identifier: ({})", entry),
+                    message: format!("invalid identifier: (\"{}\")", entry),
                 }),
             }
         }

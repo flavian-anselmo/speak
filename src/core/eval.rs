@@ -48,6 +48,17 @@ pub mod r#type {
                 Type::Empty => "()".to_string(),
             }
         }
+
+        pub fn to_type(type_name: &str) -> Type {
+            match type_name {
+                "number" => Type::Number,
+                "bool" => Type::Bool,
+                "string" => Type::String,
+                "function" => Type::Function,
+                "()" => Type::Empty,
+                _ => Type::Object(type_name.to_string()), // If errorneous, fails at Runtime
+            }
+        }
     }
 }
 
@@ -626,6 +637,15 @@ fn eval_binary_expr_node(
                         }
                     }
 
+                    Value::Array(t_i, mut arr_i) => {
+                        if let Value::Array(t_j, arr_j) = right_value {
+                            if t_i == t_j {
+                                arr_i.extend(arr_j);
+                                return Ok(Value::Array(t_i, arr_i));
+                            }
+                        }
+                    }
+
                     _ => {
                         return Err(Err {
                             message: format!(
@@ -954,12 +974,13 @@ fn eval_speak_function(
                     for (i, (arg_ident, arg_type)) in sign.1.iter().enumerate() {
                         if i < args.len() {
                             // assert the arg value types match
-                            if args[i].value_type().string() != arg_type.string() {
+                            let want_arg_type = args[i].value_type().string();
+                            if want_arg_type != arg_type.string() && want_arg_type != "[]()" {
                                 return Err(Err {
                                     message: format!(
                                         "expected arg type of ({}) but got ({}), for {} arg to ({})",
                                         arg_type.string(),
-                                        args[i].value_type().string(),
+                                        want_arg_type,
                                         i +1, fn_value.string()
                                     ),
                                     reason: ErrorReason::Runtime,
@@ -1039,7 +1060,7 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
                     Node::FunctionLiteral { sign, body, .. } => {
                         let mut val: Value;
                         for stmt in body {
-                            val = stmt.eval(stack, true)?;
+                            val = stmt.eval(stack, false)?;
                             match val {
                                 Value::FunctionCallThunk { .. } => {
                                     is_thunk = true;
@@ -1050,6 +1071,18 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
                                     // if the return type is that of the signature, return
                                     if match val.value_type() {
                                         Type::Object(obj) => obj,
+                                        Type::Array(..) => {
+                                            let v = val.value_type().string();
+                                            if let Value::Array(t, arr) = &val {
+                                                if arr.is_empty() && t == &Type::Empty {
+                                                    sign.2.string()
+                                                } else {
+                                                    v
+                                                }
+                                            } else {
+                                                v
+                                            }
+                                        }
                                         _ => val.value_type().string(),
                                     } == sign.2.string()
                                     {
@@ -1063,6 +1096,11 @@ fn unwrap_thunk(stack: &mut StackFrame, thunk: &mut Value) -> Result<Value, Err>
                                 }
                             }
                         }
+                        return Err(Err {
+                            message: "the expected return type could not be constructed"
+                                .to_string(),
+                            reason: ErrorReason::Runtime,
+                        });
                     }
                     _ => {
                         return Err(Err {
