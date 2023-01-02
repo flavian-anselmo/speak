@@ -73,7 +73,7 @@ printf "Longest collatz seq under {} is {} items, sequence is {}", max, (len lon
 
 ## Getting Started
 You can run Speak in 3 ways:
-    1. The Speak binary can be used to execute a Speak script. It can be run like so: `speak run main.spk`.
-    2. The Speak binary can initialize an interactive repl session where you can start typing Speak code. Initialized like so: `speak repl`.
-    3. Speak interpreter is written in Rust and it Speak can be execute directly using the Rust interpreter's API.
+1. The Speak binary can be used to execute a Speak script. It can be run like so: `speak run main.spk`.
+2. The Speak binary can initialize an interactive repl session where you can start typing Speak code. Initialized like so: `speak repl`.
+3. Speak interpreter is written in Rust and it Speak can be execute directly using the Rust interpreter's API.
 
